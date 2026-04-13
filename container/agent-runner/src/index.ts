@@ -516,6 +516,8 @@ async function runQuery(
                       return '';
                     }
                   })(),
+                  GRANOLA_TOKEN_PATH:
+                    '/workspace/group/reference/granola-token.json',
                   LC_MCP_API_KEY: (() => {
                     const mcpJsonPath = '/workspace/group/.mcp.json';
                     try {
