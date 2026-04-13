@@ -95,3 +95,46 @@ The agent classifies calendar events before deciding what to research:
 - Briefings are concise (under 60 seconds to read), sources provided on demand
 - Agent asks for confirmation when uncertain about meeting classification
 - OneCLI proxy bypassed for remote MCP hosts via `NO_PROXY` env var
+
+## User Onboarding
+
+### Add a new user
+
+```bash
+npx tsx scripts/add-user.ts --name caie --slack-channel-id C0XXXXXX
+```
+
+This creates `groups/slack_caie/` with shared config (CLAUDE.md, .mcp.json, google-credentials.json, slack-bot-token.txt) and registers the Slack channel. Personal tokens are left empty.
+
+### Per-user authorization
+
+Each user runs these once (on the NanoClaw host machine):
+
+```bash
+# Google Calendar + Gmail (required)
+npx tsx scripts/google-auth.ts --token groups/slack_caie/reference/google-token.json
+
+# Granola meeting notes (optional, requires paid plan)
+npx tsx scripts/granola-auth.ts --token groups/slack_caie/reference/granola-token.json
+```
+
+Then restart: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
+
+### How multi-user works
+
+- NanoClaw runs a single Slack Socket Mode connection that receives ALL messages to the bot
+- Messages are routed by Slack channel ID to the correct group
+- Each group runs in an isolated container with only that user's tokens mounted
+- No data intermingling — Kyle's container can't see Caie's tokens or vice versa
+
+### Testing vs production
+
+- **Testing:** Create a shared channel (e.g., `#clawbot-caie-test`) so you can observe other users' briefings while tuning
+- **Production:** Each user DMs the Clawbot app directly. Briefings and follow-up conversations are private per-user.
+
+### Infrastructure
+
+- NanoClaw must run on an always-on machine (MacBook with sleep disabled for testing, Mac Mini for production)
+- The host machine needs Docker running
+- Tokens are portable JSON files — migration to Mac Mini is just copying the directory
+- A web onboarding page (Tailscale + Express) is planned for remote user authorization without terminal access
