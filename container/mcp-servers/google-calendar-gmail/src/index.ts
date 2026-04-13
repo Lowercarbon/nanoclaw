@@ -1,0 +1,1081 @@
+/**
+ * Google Calendar + Gmail MCP Server for NanoClaw
+ *
+ * Provides read-only access to Google Calendar and Gmail via stdio MCP protocol.
+ * Auth: reads OAuth credentials + token from env-specified paths.
+ * Token auto-refreshes via googleapis library.
+ */
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { google, type calendar_v3, type gmail_v1 } from 'googleapis';
+import { readFileSync, writeFileSync } from 'fs';
+import { OAuth2Client } from 'google-auth-library';
+
+const CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || '';
+const TOKEN_PATH = process.env.GOOGLE_TOKEN_PATH || '';
+const LC_MCP_URL = process.env.LC_MCP_URL || '';
+const LC_MCP_API_KEY = process.env.LC_MCP_API_KEY || '';
+
+function log(msg: string): void {
+  process.stderr.write(`[google-mcp] ${msg}\n`);
+}
+
+function initAuth(): OAuth2Client {
+  if (!CREDENTIALS_PATH || !TOKEN_PATH) {
+    throw new Error(
+      'Missing GOOGLE_CREDENTIALS_PATH or GOOGLE_TOKEN_PATH environment variables',
+    );
+  }
+
+  const creds = JSON.parse(readFileSync(CREDENTIALS_PATH, 'utf-8'));
+  const { client_id, client_secret } = creds.installed || creds.web;
+
+  const oauth2Client = new google.auth.OAuth2(
+    client_id,
+    client_secret,
+    'http://localhost:3333/oauth2callback',
+  );
+
+  const token = JSON.parse(readFileSync(TOKEN_PATH, 'utf-8'));
+  oauth2Client.setCredentials(token);
+
+  // Persist refreshed tokens
+  oauth2Client.on('tokens', (newTokens) => {
+    log('Token refreshed, saving...');
+    const existing = JSON.parse(readFileSync(TOKEN_PATH, 'utf-8'));
+    const merged = { ...existing, ...newTokens };
+    writeFileSync(TOKEN_PATH, JSON.stringify(merged, null, 2));
+  });
+
+  return oauth2Client;
+}
+
+// --- Helpers ---
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function formatEvent(event: calendar_v3.Schema$Event): string {
+  const lines: string[] = [];
+  const start = event.start?.dateTime || event.start?.date || 'unknown';
+  const end = event.end?.dateTime || event.end?.date || '';
+  const status = event.status || 'confirmed';
+
+  lines.push(`Title: ${event.summary || '(no title)'}`);
+  lines.push(`Event ID: ${event.id}`);
+  lines.push(`Start: ${start}`);
+  if (end) lines.push(`End: ${end}`);
+  lines.push(`Status: ${status}`);
+
+  if (event.location) lines.push(`Location: ${event.location}`);
+  if (event.hangoutLink) lines.push(`Video: ${event.hangoutLink}`);
+
+  if (event.attendees && event.attendees.length > 0) {
+    const attendeeList = event.attendees.map((a) => {
+      const name = a.displayName || '';
+      const email = a.email || '';
+      const rsvp = a.responseStatus || 'unknown';
+      const organizer = a.organizer ? ' (organizer)' : '';
+      return `  - ${name ? name + ' ' : ''}<${email}> [${rsvp}]${organizer}`;
+    });
+    lines.push(`Attendees (${event.attendees.length}):`);
+    lines.push(...attendeeList);
+  }
+
+  if (event.description) {
+    const desc = event.description.length > 500
+      ? event.description.slice(0, 500) + '...'
+      : event.description;
+    lines.push(`Description: ${stripHtml(desc)}`);
+  }
+
+  return lines.join('\n');
+}
+
+function gmailThreadUrl(threadId: string): string {
+  return `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
+}
+
+function decodeBase64Url(data: string): string {
+  const base64 = data.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(base64, 'base64').toString('utf-8');
+}
+
+function extractBody(payload: gmail_v1.Schema$MessagePart): string {
+  // Try direct body
+  if (payload.body?.data) {
+    const decoded = decodeBase64Url(payload.body.data);
+    if (payload.mimeType === 'text/plain') return decoded;
+    if (payload.mimeType === 'text/html') return stripHtml(decoded);
+  }
+
+  // Try parts (multipart messages)
+  if (payload.parts) {
+    // Prefer text/plain
+    const plainPart = payload.parts.find((p) => p.mimeType === 'text/plain');
+    if (plainPart?.body?.data) {
+      return decodeBase64Url(plainPart.body.data);
+    }
+    // Fall back to text/html
+    const htmlPart = payload.parts.find((p) => p.mimeType === 'text/html');
+    if (htmlPart?.body?.data) {
+      return stripHtml(decodeBase64Url(htmlPart.body.data));
+    }
+    // Recurse into nested multipart
+    for (const part of payload.parts) {
+      const body = extractBody(part);
+      if (body) return body;
+    }
+  }
+
+  return '';
+}
+
+function extractAttachments(
+  payload: gmail_v1.Schema$MessagePart,
+): string[] {
+  const filenames: string[] = [];
+
+  if (payload.filename && payload.filename.length > 0 && payload.body?.attachmentId) {
+    filenames.push(payload.filename);
+  }
+
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      filenames.push(...extractAttachments(part));
+    }
+  }
+
+  return filenames;
+}
+
+function getHeader(
+  headers: gmail_v1.Schema$MessagePartHeader[] | undefined,
+  name: string,
+): string {
+  return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+}
+
+// --- Main ---
+
+async function main(): Promise<void> {
+  const auth = initAuth();
+  const calendar = google.calendar({ version: 'v3', auth });
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  const server = new McpServer({
+    name: 'google-calendar-gmail',
+    version: '1.0.0',
+  });
+
+  // ============ CALENDAR TOOLS ============
+
+  server.tool(
+    'list_calendars',
+    'List all Google Calendars the user has access to, including shared team calendars',
+    {},
+    async () => {
+      try {
+        const result = await calendar.calendarList.list({ maxResults: 100 });
+        const items = result.data.items || [];
+        const lines = items.map((cal) => {
+          const access = cal.accessRole || 'unknown';
+          const primary = cal.primary ? ' (PRIMARY)' : '';
+          return `[${access}] ${cal.summary}${primary} — ID: ${cal.id}`;
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${items.length} calendars:\n\n${lines.join('\n')}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error listing calendars: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'list_events',
+    'List upcoming events from a Google Calendar within a time range. Defaults to today if no time range specified.',
+    {
+      calendar_id: z
+        .string()
+        .default('primary')
+        .describe(
+          'Calendar ID. Use "primary" for the user\'s main calendar, or a specific calendar ID from list_calendars.',
+        ),
+      time_min: z
+        .string()
+        .optional()
+        .describe(
+          'Start of time range (RFC3339, e.g. "2026-04-13T00:00:00-07:00"). Defaults to now.',
+        ),
+      time_max: z
+        .string()
+        .optional()
+        .describe(
+          'End of time range (RFC3339, e.g. "2026-04-14T00:00:00-07:00"). Defaults to end of today.',
+        ),
+      max_results: z
+        .number()
+        .int()
+        .default(20)
+        .describe('Maximum number of events to return (default 20, max 50)'),
+    },
+    async (args) => {
+      try {
+        const now = new Date();
+        const endOfDay = new Date(now);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        const result = await calendar.events.list({
+          calendarId: args.calendar_id,
+          timeMin: args.time_min || now.toISOString(),
+          timeMax: args.time_max || endOfDay.toISOString(),
+          maxResults: Math.min(args.max_results, 50),
+          singleEvents: true,
+          orderBy: 'startTime',
+        });
+
+        const items = result.data.items || [];
+        if (items.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'No events found in the specified time range.',
+              },
+            ],
+          };
+        }
+
+        const formatted = items.map(formatEvent).join('\n\n---\n\n');
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${items.length} events:\n\n${formatted}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error listing events: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'get_event',
+    'Get full details of a specific calendar event by its event ID',
+    {
+      event_id: z.string().describe('The event ID'),
+      calendar_id: z
+        .string()
+        .default('primary')
+        .describe('Calendar ID (default: primary)'),
+    },
+    async (args) => {
+      try {
+        const result = await calendar.events.get({
+          calendarId: args.calendar_id,
+          eventId: args.event_id,
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: formatEvent(result.data),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error getting event: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ============ GMAIL TOOLS ============
+
+  server.tool(
+    'search_threads',
+    'Search Gmail threads by email address and/or person name. Constructs a union query so matches work even when people use different email addresses. Returns thread ID, subject, snippet, date, and a direct Gmail link.',
+    {
+      email: z
+        .string()
+        .optional()
+        .describe('Email address to search for (e.g. "jane@dioxycle.com")'),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          'Person name to search for (e.g. "Jane Smith"). Used as a fallback when email alone returns no results.',
+        ),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          'Additional Gmail query filters (e.g. "after:2026/03/01", "subject:quarterly update", "has:attachment"). Combined with email/name search.',
+        ),
+      max_results: z
+        .number()
+        .int()
+        .default(10)
+        .describe('Maximum number of threads to return (default 10, max 30)'),
+    },
+    async (args) => {
+      try {
+        if (!args.email && !args.name && !args.query) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Provide at least one of: email, name, or query.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Build union query for email + name
+        const fromParts: string[] = [];
+        if (args.email) fromParts.push(`from:${args.email}`);
+        if (args.name) fromParts.push(`from:"${args.name}"`);
+
+        let q = '';
+        if (fromParts.length > 1) {
+          // Gmail OR syntax: {term1 term2}
+          q = `{${fromParts.join(' ')}}`;
+        } else if (fromParts.length === 1) {
+          q = fromParts[0];
+        }
+
+        if (args.query) {
+          q = q ? `${q} ${args.query}` : args.query;
+        }
+
+        log(`Gmail search query: ${q}`);
+
+        const result = await gmail.users.threads.list({
+          userId: 'me',
+          q,
+          maxResults: Math.min(args.max_results, 30),
+        });
+
+        const threads = result.data.threads || [];
+        if (threads.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No threads found for query: ${q}`,
+              },
+            ],
+          };
+        }
+
+        // Fetch minimal details for each thread
+        const summaries: string[] = [];
+        for (const thread of threads) {
+          if (!thread.id) continue;
+          try {
+            const detail = await gmail.users.threads.get({
+              userId: 'me',
+              id: thread.id,
+              format: 'metadata',
+              metadataHeaders: ['Subject', 'From', 'Date'],
+            });
+
+            const firstMsg = detail.data.messages?.[0];
+            const headers = firstMsg?.payload?.headers;
+            const subject = getHeader(headers, 'Subject') || '(no subject)';
+            const from = getHeader(headers, 'From');
+            const date = getHeader(headers, 'Date');
+            const msgCount = detail.data.messages?.length || 0;
+            const url = gmailThreadUrl(thread.id);
+
+            summaries.push(
+              `Subject: ${subject}\n` +
+                `From: ${from}\n` +
+                `Date: ${date}\n` +
+                `Messages: ${msgCount}\n` +
+                `Thread ID: ${thread.id}\n` +
+                `Link: ${url}`,
+            );
+          } catch {
+            summaries.push(`Thread ${thread.id}: (failed to fetch details)`);
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${threads.length} threads for query: ${q}\n\n${summaries.join('\n\n---\n\n')}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error searching threads: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'get_thread',
+    'Get full Gmail thread by ID. Returns all messages with sender, date, body text, and attachment filenames.',
+    {
+      thread_id: z.string().describe('The Gmail thread ID'),
+    },
+    async (args) => {
+      try {
+        const result = await gmail.users.threads.get({
+          userId: 'me',
+          id: args.thread_id,
+          format: 'full',
+        });
+
+        const messages = result.data.messages || [];
+        const url = gmailThreadUrl(args.thread_id);
+
+        const formatted = messages.map((msg) => {
+          const headers = msg.payload?.headers;
+          const from = getHeader(headers, 'From');
+          const to = getHeader(headers, 'To');
+          const date = getHeader(headers, 'Date');
+          const subject = getHeader(headers, 'Subject');
+
+          let body = msg.payload ? extractBody(msg.payload) : '';
+          if (body.length > 3000) {
+            body = body.slice(0, 3000) + '\n... (truncated)';
+          }
+
+          const attachments = msg.payload
+            ? extractAttachments(msg.payload)
+            : [];
+          const attachLine =
+            attachments.length > 0
+              ? `Attachments: ${attachments.join(', ')}`
+              : '';
+
+          return [
+            `From: ${from}`,
+            `To: ${to}`,
+            `Date: ${date}`,
+            subject ? `Subject: ${subject}` : '',
+            attachLine,
+            '',
+            body,
+          ]
+            .filter(Boolean)
+            .join('\n');
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Thread: ${url}\nMessages: ${messages.length}\n\n${formatted.join('\n\n========\n\n')}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error getting thread: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'list_messages',
+    'List recent Gmail messages with optional query filter',
+    {
+      query: z
+        .string()
+        .optional()
+        .describe(
+          'Gmail search query (e.g. "is:unread", "from:jane@example.com after:2026/04/01")',
+        ),
+      max_results: z
+        .number()
+        .int()
+        .default(10)
+        .describe('Maximum number of messages to return (default 10, max 30)'),
+    },
+    async (args) => {
+      try {
+        const result = await gmail.users.messages.list({
+          userId: 'me',
+          q: args.query || '',
+          maxResults: Math.min(args.max_results, 30),
+        });
+
+        const messages = result.data.messages || [];
+        if (messages.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No messages found${args.query ? ` for query: ${args.query}` : ''}.`,
+              },
+            ],
+          };
+        }
+
+        const summaries: string[] = [];
+        for (const msg of messages) {
+          if (!msg.id) continue;
+          try {
+            const detail = await gmail.users.messages.get({
+              userId: 'me',
+              id: msg.id,
+              format: 'metadata',
+              metadataHeaders: ['Subject', 'From', 'Date'],
+            });
+
+            const headers = detail.data.payload?.headers;
+            const subject = getHeader(headers, 'Subject') || '(no subject)';
+            const from = getHeader(headers, 'From');
+            const date = getHeader(headers, 'Date');
+
+            summaries.push(
+              `Subject: ${subject}\nFrom: ${from}\nDate: ${date}\nMessage ID: ${msg.id}\nThread ID: ${msg.threadId}`,
+            );
+          } catch {
+            summaries.push(`Message ${msg.id}: (failed to fetch details)`);
+          }
+        }
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${messages.length} messages:\n\n${summaries.join('\n\n---\n\n')}`,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error listing messages: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ============ LOWERCARBON MCP PROXY ============
+
+  if (LC_MCP_URL && LC_MCP_API_KEY) {
+    // Helper: call a tool on the remote Vectorize MCP endpoint
+    async function callLcMcpTool(
+      toolName: string,
+      args: Record<string, unknown>,
+    ): Promise<string> {
+      const body = {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: toolName, arguments: args },
+        id: Date.now(),
+      };
+
+      const resp = await fetch(LC_MCP_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${LC_MCP_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = (await resp.json()) as {
+        result?: { content?: Array<{ type: string; text?: string }> };
+        error?: { message: string };
+      };
+
+      if (data.error) {
+        throw new Error(data.error.message);
+      }
+
+      const textParts =
+        data.result?.content
+          ?.filter((c) => c.type === 'text' && c.text)
+          .map((c) => c.text!) || [];
+      return textParts.join('\n') || '(no content returned)';
+    }
+
+    server.tool(
+      'portfolio_documents',
+      'Search Lowercarbon portfolio company documents — investor updates, internal updates, slack messages, financing history, board notes, investment memos. This is the primary source for portfolio company context.',
+      {
+        question: z.string().describe('The search query'),
+        company: z
+          .string()
+          .optional()
+          .describe('Filter results to a specific portfolio company name'),
+        doc_type: z
+          .string()
+          .optional()
+          .describe(
+            'Filter by document type: investor_update, board_notes, board_deck, investment_memo, slack_message',
+          ),
+        k: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .default(10)
+          .describe('Number of documents to retrieve (default 10)'),
+      },
+      async (args) => {
+        try {
+          const result = await callLcMcpTool('portfolio-documents', args);
+          return {
+            content: [{ type: 'text' as const, text: result }],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `LC MCP error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'get_company_facts',
+      'Get quantitative investment data for a specific portfolio company — investment amount, ownership percentage, MOIC, round details.',
+      {
+        question: z.string().describe('The search query'),
+        company: z
+          .string()
+          .optional()
+          .describe('Filter results to a specific portfolio company name'),
+        k: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .default(5)
+          .describe('Number of documents to retrieve (default 5)'),
+      },
+      async (args) => {
+        try {
+          const result = await callLcMcpTool('get-company-facts', args);
+          return {
+            content: [{ type: 'text' as const, text: result }],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `LC MCP error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'get_portfolio_facts',
+      'Query portfolio-level facts — portfolio count, categories, holistic portfolio questions. Use this to confirm whether a company is in the LC portfolio.',
+      {
+        question: z.string().describe('The search query'),
+        k: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .default(5)
+          .describe('Number of documents to retrieve (default 5)'),
+      },
+      async (args) => {
+        try {
+          const result = await callLcMcpTool('get-portfolio-facts', args);
+          return {
+            content: [{ type: 'text' as const, text: result }],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `LC MCP error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    log('Lowercarbon MCP proxy tools enabled');
+  } else {
+    log('LC_MCP_URL or LC_MCP_API_KEY not set — LC MCP tools disabled');
+  }
+
+  // ============ SLACK TOOLS ============
+
+  const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+
+  if (SLACK_BOT_TOKEN) {
+    server.tool(
+      'search_slack_channel',
+      'Search for a Slack channel by name. Use this to find the correct channel for a portfolio company before searching messages. Returns channel ID, name, and member count.',
+      {
+        name: z
+          .string()
+          .describe(
+            'Channel name to search for (e.g. "Senra", "Arc Boats", "Dioxycle"). Case-insensitive partial match.',
+          ),
+      },
+      async (args) => {
+        try {
+          const searchName = args.name.toLowerCase();
+          let matchedChannels: Array<{
+            id: string;
+            name: string;
+            num_members: number;
+          }> = [];
+          let cursor: string | undefined;
+
+          // Paginate through channels to find matches
+          do {
+            const url = new URL('https://slack.com/api/conversations.list');
+            url.searchParams.set('types', 'public_channel');
+            url.searchParams.set('exclude_archived', 'true');
+            url.searchParams.set('limit', '200');
+            if (cursor) url.searchParams.set('cursor', cursor);
+
+            const resp = await fetch(url.toString(), {
+              headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+            });
+            const data = (await resp.json()) as {
+              ok: boolean;
+              error?: string;
+              channels?: Array<{
+                id: string;
+                name: string;
+                num_members: number;
+              }>;
+              response_metadata?: { next_cursor?: string };
+            };
+
+            if (!data.ok) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Slack API error: ${data.error || 'unknown'}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+
+            for (const ch of data.channels || []) {
+              if (ch.name.toLowerCase().includes(searchName)) {
+                matchedChannels.push({
+                  id: ch.id,
+                  name: ch.name,
+                  num_members: ch.num_members,
+                });
+              }
+            }
+
+            cursor = data.response_metadata?.next_cursor || undefined;
+          } while (cursor && matchedChannels.length === 0);
+
+          if (matchedChannels.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No Slack channel found matching "${args.name}".`,
+                },
+              ],
+            };
+          }
+
+          const lines = matchedChannels.map(
+            (ch) => `#${ch.name} (ID: ${ch.id}, ${ch.num_members} members)`,
+          );
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Found ${matchedChannels.length} channel(s) matching "${args.name}":\n\n${lines.join('\n')}`,
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error searching Slack channels: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'search_slack_messages',
+      'Search for messages in a Slack channel. Use after finding the channel ID with search_slack_channel.',
+      {
+        channel_id: z.string().describe('Slack channel ID (e.g. "C0ABC123")'),
+        query: z
+          .string()
+          .optional()
+          .describe(
+            'Optional text to search for within the channel. If omitted, returns the most recent messages.',
+          ),
+        days: z
+          .number()
+          .int()
+          .default(30)
+          .describe(
+            'How many days back to search (default 30)',
+          ),
+        max_results: z
+          .number()
+          .int()
+          .default(20)
+          .describe('Maximum messages to return (default 20, max 50)'),
+      },
+      async (args) => {
+        try {
+          const oldest = Math.floor(
+            (Date.now() - args.days * 24 * 60 * 60 * 1000) / 1000,
+          );
+
+          const url = new URL(
+            'https://slack.com/api/conversations.history',
+          );
+          url.searchParams.set('channel', args.channel_id);
+          url.searchParams.set('oldest', String(oldest));
+          url.searchParams.set(
+            'limit',
+            String(Math.min(args.max_results, 50)),
+          );
+
+          const resp = await fetch(url.toString(), {
+            headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+          });
+          let data = (await resp.json()) as {
+            ok: boolean;
+            error?: string;
+            messages?: Array<{
+              user?: string;
+              text: string;
+              ts: string;
+            }>;
+          };
+
+          if (!data.ok) {
+            if (data.error === 'not_in_channel') {
+              // Auto-join the channel and retry
+              log(`Not in channel ${args.channel_id}, attempting to join...`);
+              const joinResp = await fetch(
+                'https://slack.com/api/conversations.join',
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ channel: args.channel_id }),
+                },
+              );
+              const joinData = (await joinResp.json()) as {
+                ok: boolean;
+                error?: string;
+              };
+              if (!joinData.ok) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Could not auto-join channel: ${joinData.error || 'unknown'}. For private channels, the bot must be invited manually.`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              log(`Joined channel ${args.channel_id}, retrying message fetch...`);
+
+              // Retry the history fetch
+              const retryResp = await fetch(url.toString(), {
+                headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+              });
+              data = (await retryResp.json()) as typeof data;
+              if (!data.ok) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Joined channel but still can't read messages: ${data.error || 'unknown'}`,
+                    },
+                  ],
+                  isError: true,
+                };
+              }
+              // Fall through to process messages below
+            } else {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Slack API error: ${data.error || 'unknown'}`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+          }
+
+          let messages = data.messages || [];
+
+          // Filter by query text if provided
+          if (args.query) {
+            const q = args.query.toLowerCase();
+            messages = messages.filter((m) =>
+              m.text.toLowerCase().includes(q),
+            );
+          }
+
+          if (messages.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No messages found in channel${args.query ? ` matching "${args.query}"` : ''} in the last ${args.days} days.`,
+                },
+              ],
+            };
+          }
+
+          const formatted = messages.map((msg) => {
+            const date = new Date(
+              parseFloat(msg.ts) * 1000,
+            ).toISOString();
+            const user = msg.user || 'unknown';
+            const text =
+              msg.text.length > 500
+                ? msg.text.slice(0, 500) + '...'
+                : msg.text;
+            return `[${date}] <@${user}>: ${text}`;
+          });
+
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Found ${messages.length} messages (last ${args.days} days):\n\n${formatted.join('\n\n')}`,
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error searching Slack messages: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    log('Slack tools enabled');
+  } else {
+    log('SLACK_BOT_TOKEN not set — Slack tools disabled');
+  }
+
+  // Start server
+  log('Starting Google Calendar + Gmail MCP server...');
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  log('Server connected');
+}
+
+main().catch((err) => {
+  log(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});

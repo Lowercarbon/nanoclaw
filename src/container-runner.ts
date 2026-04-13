@@ -267,6 +267,13 @@ async function buildContainerArgs(
     );
   }
 
+  // Exclude remote MCP server hosts from the OneCLI proxy so they can
+  // authenticate with their own tokens instead of being intercepted.
+  if (onecliApplied) {
+    args.push('-e', 'NO_PROXY=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com');
+    args.push('-e', 'no_proxy=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com');
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 

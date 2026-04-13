@@ -469,6 +469,8 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__google__*',
+        'mcp__lowercarbon-mcp__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -484,6 +486,50 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(fs.existsSync('/workspace/group/reference/google-credentials.json') &&
+        fs.existsSync('/workspace/group/reference/google-token.json')
+          ? {
+              google: {
+                command: 'node',
+                args: [
+                  '/app/mcp-servers/google-calendar-gmail/dist/index.js',
+                ],
+                env: {
+                  GOOGLE_CREDENTIALS_PATH:
+                    '/workspace/group/reference/google-credentials.json',
+                  GOOGLE_TOKEN_PATH:
+                    '/workspace/group/reference/google-token.json',
+                  SLACK_BOT_TOKEN: (() => {
+                    const tokenPath = '/workspace/group/reference/slack-bot-token.txt';
+                    try {
+                      return fs.readFileSync(tokenPath, 'utf-8').trim();
+                    } catch {
+                      return '';
+                    }
+                  })(),
+                  LC_MCP_URL: (() => {
+                    const mcpJsonPath = '/workspace/group/.mcp.json';
+                    try {
+                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+                      return cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
+                    } catch {
+                      return '';
+                    }
+                  })(),
+                  LC_MCP_API_KEY: (() => {
+                    const mcpJsonPath = '/workspace/group/.mcp.json';
+                    try {
+                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+                      const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
+                      return auth.replace('Bearer ', '');
+                    } catch {
+                      return '';
+                    }
+                  })(),
+                },
+              },
+            }
+          : {}),
       },
       hooks: {
         PreCompact: [

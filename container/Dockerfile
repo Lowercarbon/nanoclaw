@@ -48,6 +48,12 @@ COPY agent-runner/ ./
 # Build TypeScript
 RUN npm run build
 
+# Copy and build Google Calendar + Gmail MCP server
+COPY mcp-servers/google-calendar-gmail/package*.json /app/mcp-servers/google-calendar-gmail/
+RUN cd /app/mcp-servers/google-calendar-gmail && npm install
+COPY mcp-servers/google-calendar-gmail/ /app/mcp-servers/google-calendar-gmail/
+RUN cd /app/mcp-servers/google-calendar-gmail && npx tsc
+
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
