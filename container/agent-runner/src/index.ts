@@ -529,7 +529,7 @@ async function runQuery(
         ...mcpServerFromKeyFile('slack', '/workspace/group/reference/slack-bot-token.txt', (token) => ({
           SLACK_BOT_TOKEN: token,
         })),
-        ...(() => {
+        ...((): Record<string, { command: string; args: string[]; env: Record<string, string> }> => {
           try {
             const cfg = JSON.parse(fs.readFileSync('/workspace/group/.mcp.json', 'utf-8'));
             const url = cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
