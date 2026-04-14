@@ -59,11 +59,6 @@ const FIELD_MAP: Record<string, string> = {
   'field-3836801': 'Deal Close Date',
 };
 
-interface AffinityResponse {
-  data?: unknown;
-  pagination?: { next_page_token?: string };
-}
-
 async function affinityFetch(
   path: string,
   params?: Record<string, string>,

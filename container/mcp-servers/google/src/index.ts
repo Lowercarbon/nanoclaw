@@ -428,38 +428,38 @@ async function main(): Promise<void> {
           };
         }
 
-        // Fetch minimal details for each thread
-        const summaries: string[] = [];
-        for (const thread of threads) {
-          if (!thread.id) continue;
-          try {
-            const detail = await gmail.users.threads.get({
-              userId: 'me',
-              id: thread.id,
-              format: 'metadata',
-              metadataHeaders: ['Subject', 'From', 'Date'],
-            });
+        // Fetch minimal details for each thread (parallel)
+        const summaries = await Promise.all(
+          threads.filter((t) => t.id).map(async (thread) => {
+            try {
+              const detail = await gmail.users.threads.get({
+                userId: 'me',
+                id: thread.id!,
+                format: 'metadata',
+                metadataHeaders: ['Subject', 'From', 'Date'],
+              });
 
-            const firstMsg = detail.data.messages?.[0];
-            const headers = firstMsg?.payload?.headers;
-            const subject = getHeader(headers, 'Subject') || '(no subject)';
-            const from = getHeader(headers, 'From');
-            const date = getHeader(headers, 'Date');
-            const msgCount = detail.data.messages?.length || 0;
-            const url = gmailThreadUrl(thread.id);
+              const firstMsg = detail.data.messages?.[0];
+              const headers = firstMsg?.payload?.headers;
+              const subject = getHeader(headers, 'Subject') || '(no subject)';
+              const from = getHeader(headers, 'From');
+              const date = getHeader(headers, 'Date');
+              const msgCount = detail.data.messages?.length || 0;
+              const url = gmailThreadUrl(thread.id!);
 
-            summaries.push(
-              `Subject: ${subject}\n` +
+              return (
+                `Subject: ${subject}\n` +
                 `From: ${from}\n` +
                 `Date: ${date}\n` +
                 `Messages: ${msgCount}\n` +
                 `Thread ID: ${thread.id}\n` +
-                `Link: ${url}`,
-            );
-          } catch {
-            summaries.push(`Thread ${thread.id}: (failed to fetch details)`);
-          }
-        }
+                `Link: ${url}`
+              );
+            } catch {
+              return `Thread ${thread.id}: (failed to fetch details)`;
+            }
+          }),
+        );
 
         return {
           content: [
@@ -591,29 +591,27 @@ async function main(): Promise<void> {
           };
         }
 
-        const summaries: string[] = [];
-        for (const msg of messages) {
-          if (!msg.id) continue;
-          try {
-            const detail = await gmail.users.messages.get({
-              userId: 'me',
-              id: msg.id,
-              format: 'metadata',
-              metadataHeaders: ['Subject', 'From', 'Date'],
-            });
+        const summaries = await Promise.all(
+          messages.filter((m) => m.id).map(async (msg) => {
+            try {
+              const detail = await gmail.users.messages.get({
+                userId: 'me',
+                id: msg.id!,
+                format: 'metadata',
+                metadataHeaders: ['Subject', 'From', 'Date'],
+              });
 
-            const headers = detail.data.payload?.headers;
-            const subject = getHeader(headers, 'Subject') || '(no subject)';
-            const from = getHeader(headers, 'From');
-            const date = getHeader(headers, 'Date');
+              const headers = detail.data.payload?.headers;
+              const subject = getHeader(headers, 'Subject') || '(no subject)';
+              const from = getHeader(headers, 'From');
+              const date = getHeader(headers, 'Date');
 
-            summaries.push(
-              `Subject: ${subject}\nFrom: ${from}\nDate: ${date}\nMessage ID: ${msg.id}\nThread ID: ${msg.threadId}`,
-            );
-          } catch {
-            summaries.push(`Message ${msg.id}: (failed to fetch details)`);
-          }
-        }
+              return `Subject: ${subject}\nFrom: ${from}\nDate: ${date}\nMessage ID: ${msg.id}\nThread ID: ${msg.threadId}`;
+            } catch {
+              return `Message ${msg.id}: (failed to fetch details)`;
+            }
+          }),
+        );
 
         return {
           content: [
@@ -640,21 +638,22 @@ async function main(): Promise<void> {
   // download_attachment — fetch file content from a Gmail message attachment
   server.tool(
     'download_attachment',
-    'Download a file attachment from a Gmail message. Use message_id and attachment_id from get_thread results (shown as msgId=xxx, attId=yyy). Returns base64 file content.',
+    'Download a file attachment from a Gmail message. Use message_id, attachment_id, filename, and mime_type from get_thread results (shown as msgId=xxx, attId=yyy). Returns base64 file content.',
     {
       message_id: z.string().describe('Gmail message ID (from get_thread results)'),
       attachment_id: z.string().describe('Attachment ID (from get_thread results)'),
+      filename: z.string().optional().describe('Filename (from get_thread results, avoids extra API call)'),
+      mime_type: z.string().optional().describe('MIME type (from get_thread results, avoids extra API call)'),
     },
     async (args) => {
       try {
-        // Get attachment data
         const att = await gmail.users.messages.attachments.get({
           userId: 'me',
           messageId: args.message_id,
           id: args.attachment_id,
         });
 
-        const data = att.data.data; // base64url-encoded content
+        const data = att.data.data;
         if (!data) {
           return {
             content: [{ type: 'text' as const, text: 'Attachment has no content.' }],
@@ -662,32 +661,35 @@ async function main(): Promise<void> {
           };
         }
 
-        // Get message to find the filename and mime type
-        const msg = await gmail.users.messages.get({
-          userId: 'me',
-          id: args.message_id,
-          format: 'full',
-        });
+        let filename = args.filename || 'attachment';
+        let mimeType = args.mime_type || 'application/octet-stream';
 
-        let filename = 'attachment';
-        let mimeType = 'application/octet-stream';
-        const parts = msg.data.payload?.parts || [];
-        for (const part of parts) {
-          if (part.body?.attachmentId === args.attachment_id) {
-            filename = part.filename || filename;
-            mimeType = part.mimeType || mimeType;
-            break;
+        // Only fetch message metadata if filename/mimeType weren't provided
+        if (!args.filename || !args.mime_type) {
+          const msg = await gmail.users.messages.get({
+            userId: 'me',
+            id: args.message_id,
+            format: 'full',
+          });
+          const parts = msg.data.payload?.parts || [];
+          for (const part of parts) {
+            if (part.body?.attachmentId === args.attachment_id) {
+              filename = part.filename || filename;
+              mimeType = part.mimeType || mimeType;
+              break;
+            }
           }
         }
 
         // Convert base64url to standard base64
         const base64 = data.replace(/-/g, '+').replace(/_/g, '/');
+        const sizeBytes = Math.floor((base64.length * 3) / 4);
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ filename, mimeType, base64, sizeBytes: base64.length }),
+              text: JSON.stringify({ filename, mimeType, base64, sizeBytes }),
             },
           ],
         };

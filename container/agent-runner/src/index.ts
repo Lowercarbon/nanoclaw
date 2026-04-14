@@ -367,6 +367,28 @@ function waitForIpcMessage(): Promise<string | null> {
 
 /**
  * Run a single query and stream results via writeOutput.
+/** Conditionally register an MCP server if a key file exists and is non-empty. */
+function mcpServerFromKeyFile(
+  name: string,
+  keyPath: string,
+  makeEnv: (key: string) => Record<string, string>,
+): Record<string, { command: string; args: string[]; env: Record<string, string> }> {
+  try {
+    const key = fs.readFileSync(keyPath, 'utf-8').trim();
+    if (!key) return {};
+    return {
+      [name]: {
+        command: 'node',
+        args: [`/app/mcp-servers/${name}/dist/index.js`],
+        env: makeEnv(key),
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
@@ -504,26 +526,12 @@ async function runQuery(
               },
             }
           : {}),
+        ...mcpServerFromKeyFile('slack', '/workspace/group/reference/slack-bot-token.txt', (token) => ({
+          SLACK_BOT_TOKEN: token,
+        })),
         ...(() => {
-          const tokenPath = '/workspace/group/reference/slack-bot-token.txt';
           try {
-            const token = fs.readFileSync(tokenPath, 'utf-8').trim();
-            if (!token) return {};
-            return {
-              slack: {
-                command: 'node',
-                args: ['/app/mcp-servers/slack/dist/index.js'],
-                env: { SLACK_BOT_TOKEN: token },
-              },
-            };
-          } catch {
-            return {};
-          }
-        })(),
-        ...(() => {
-          const mcpJsonPath = '/workspace/group/.mcp.json';
-          try {
-            const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+            const cfg = JSON.parse(fs.readFileSync('/workspace/group/.mcp.json', 'utf-8'));
             const url = cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
             const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
             const apiKey = auth.replace('Bearer ', '');
@@ -551,22 +559,9 @@ async function runQuery(
               },
             }
           : {}),
-        ...(() => {
-          const keyPath = '/workspace/group/reference/affinity-api-key.txt';
-          try {
-            const key = fs.readFileSync(keyPath, 'utf-8').trim();
-            if (!key) return {};
-            return {
-              affinity: {
-                command: 'node',
-                args: ['/app/mcp-servers/affinity/dist/index.js'],
-                env: { AFFINITY_API_KEY: key },
-              },
-            };
-          } catch {
-            return {};
-          }
-        })(),
+        ...mcpServerFromKeyFile('affinity', '/workspace/group/reference/affinity-api-key.txt', (key) => ({
+          AFFINITY_API_KEY: key,
+        })),
       },
       hooks: {
         PreCompact: [

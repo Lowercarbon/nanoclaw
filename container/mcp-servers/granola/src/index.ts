@@ -23,13 +23,12 @@ function log(msg: string): void {
 
 let granolaAccessToken = '';
 
-function loadGranolaToken(): string {
+function loadGranolaToken(): void {
   try {
     const token = JSON.parse(readFileSync(GRANOLA_TOKEN_PATH, 'utf-8'));
     granolaAccessToken = token.access_token || '';
-    return granolaAccessToken;
   } catch {
-    return '';
+    granolaAccessToken = '';
   }
 }
 
