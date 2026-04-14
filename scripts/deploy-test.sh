@@ -4,10 +4,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Resolve the real project root — if running from a git worktree, follow
+# the .git file back to the main repo so we find store/messages.db.
+WORKTREE_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -f "$WORKTREE_DIR/.git" ]; then
+  # .git is a file (not dir) in worktrees — it contains "gitdir: /path/to/main/.git/worktrees/..."
+  MAIN_GIT_DIR="$(sed 's/^gitdir: //' "$WORKTREE_DIR/.git" | sed 's|/\.git/worktrees/.*||')"
+  PROJECT_DIR="$MAIN_GIT_DIR"
+else
+  PROJECT_DIR="$WORKTREE_DIR"
+fi
 
 echo "=== Building container (no cache) ==="
-docker build --no-cache -t nanoclaw-agent:latest -f "$PROJECT_DIR/container/Dockerfile" "$PROJECT_DIR/container/"
+# Build from the script's own repo (may be a worktree with newer code)
+docker build --no-cache -t nanoclaw-agent:latest -f "$WORKTREE_DIR/container/Dockerfile" "$WORKTREE_DIR/container/"
 
 echo ""
 echo "=== Clearing agent sessions ==="
