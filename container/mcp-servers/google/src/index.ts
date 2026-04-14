@@ -698,7 +698,8 @@ async function main(): Promise<void> {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ filename, mimeType, filePath, sizeBytes: buffer.length }),
+              text: JSON.stringify({ filename, mimeType, filePath, sizeBytes: buffer.length })
+                + `\n\nFile saved to disk. To deliver it to the user, call send_file(file_path="${filePath}", filename="${filename}").`,
             },
           ],
         };
