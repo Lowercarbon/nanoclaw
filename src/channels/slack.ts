@@ -2,7 +2,6 @@ import fs from 'fs';
 
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
-import fs from 'fs';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
@@ -226,21 +225,6 @@ export class SlackChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.startsWith('slack:');
-  }
-
-  async sendFile(
-    jid: string,
-    filePath: string,
-    filename: string,
-  ): Promise<void> {
-    const channelId = jid.replace(/^slack:/, '');
-    const fileContent = fs.readFileSync(filePath);
-    await this.app.client.filesUploadV2({
-      channel_id: channelId,
-      file: fileContent,
-      filename,
-    });
-    logger.info({ jid, filename }, 'File uploaded to Slack');
   }
 
   async disconnect(): Promise<void> {

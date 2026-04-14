@@ -10,7 +10,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { google, type calendar_v3, type gmail_v1 } from 'googleapis';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import path from 'path';
 import { OAuth2Client } from 'google-auth-library';
 
 const CREDENTIALS_PATH = process.env.GOOGLE_CREDENTIALS_PATH || '';
@@ -635,15 +636,17 @@ async function main(): Promise<void> {
     },
   );
 
-  // download_attachment — fetch file content from a Gmail message attachment
+  // download_attachment — fetch and save a Gmail attachment to disk
+  // Returns file path + metadata (NOT base64) to keep binary data out of agent context
   server.tool(
     'download_attachment',
-    'Download a file attachment from a Gmail message. Use message_id, attachment_id, filename, and mime_type from get_thread results (shown as msgId=xxx, attId=yyy). Returns base64 file content.',
+    'Download a file attachment from a Gmail message and save it to disk. Returns a file_path you can pass to send_file or Read. Use save_dir to persist to a company folder (e.g. "/workspace/group/companies/even-platforms/attachments").',
     {
       message_id: z.string().describe('Gmail message ID (from get_thread results)'),
       attachment_id: z.string().describe('Attachment ID (from get_thread results)'),
       filename: z.string().optional().describe('Filename (from get_thread results, avoids extra API call)'),
       mime_type: z.string().optional().describe('MIME type (from get_thread results, avoids extra API call)'),
+      save_dir: z.string().optional().describe('Directory to save the file in. Defaults to temp IPC dir. Use a persistent path to keep the file for future sessions.'),
     },
     async (args) => {
       try {
@@ -681,15 +684,21 @@ async function main(): Promise<void> {
           }
         }
 
-        // Convert base64url to standard base64
-        const base64 = data.replace(/-/g, '+').replace(/_/g, '/');
-        const sizeBytes = Math.floor((base64.length * 3) / 4);
+        // Decode and write to disk — keeps binary data out of the model context
+        const buffer = Buffer.from(data, 'base64url');
+        const targetDir = args.save_dir || '/workspace/ipc/files';
+        mkdirSync(targetDir, { recursive: true });
+        const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const filePath = path.join(targetDir, safeFilename);
+        writeFileSync(filePath, buffer);
+
+        log(`Attachment saved: ${filePath} (${buffer.length} bytes)`);
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ filename, mimeType, base64, sizeBytes }),
+              text: JSON.stringify({ filename, mimeType, filePath, sizeBytes: buffer.length }),
             },
           ],
         };
