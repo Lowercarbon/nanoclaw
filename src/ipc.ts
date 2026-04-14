@@ -99,19 +99,6 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 data.filePath &&
                 data.filename
               ) {
-                // Translate container path to host path.
-                // Container writes to /workspace/ipc/files/..., which is
-                // mounted from the host's IPC directory for this group.
-                const hostFilePath = (data.filePath as string).startsWith(
-                  '/workspace/ipc/',
-                )
-                  ? path.join(
-                      ipcBaseDir,
-                      sourceGroup,
-                      (data.filePath as string).slice('/workspace/ipc/'.length),
-                    )
-                  : data.filePath;
-
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
@@ -120,9 +107,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   if (deps.sendFile) {
                     await deps.sendFile(
                       data.chatJid,
-                      hostFilePath,
+                      data.filePath,
                       data.filename,
                     );
+                    // Clean up temp file after successful upload
+                    try {
+                      fs.unlinkSync(data.filePath);
+                    } catch {
+                      /* ignore */
+                    }
                     logger.info(
                       {
                         chatJid: data.chatJid,
@@ -134,14 +127,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   } else {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC file send requested but sendFile not available',
+                      'File upload not supported — no sendFile handler',
                     );
-                  }
-                  // Clean up temp file
-                  try {
-                    fs.unlinkSync(hostFilePath);
-                  } catch {
-                    // ignore cleanup errors
                   }
                 } else {
                   logger.warn(

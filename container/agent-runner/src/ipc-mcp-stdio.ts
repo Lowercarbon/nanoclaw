@@ -68,6 +68,36 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Send a file attachment to the user or group. The file will appear as a downloadable attachment in their chat. Provide the file content as base64.',
+  {
+    file_content_base64: z.string().describe('Base64-encoded file content'),
+    filename: z.string().describe('The filename (e.g. "pitch-deck.pdf")'),
+  },
+  async (args) => {
+    // Write file to disk
+    const filesDir = path.join(IPC_DIR, 'files');
+    fs.mkdirSync(filesDir, { recursive: true });
+    const safeFilename = args.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = path.join(filesDir, `${Date.now()}-${safeFilename}`);
+    const buffer = Buffer.from(args.file_content_base64, 'base64');
+    fs.writeFileSync(filePath, buffer);
+
+    // Write IPC message referencing the file
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'file',
+      chatJid,
+      filePath,
+      filename: args.filename,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { content: [{ type: 'text' as const, text: `File "${args.filename}" sent (${buffer.length} bytes).` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

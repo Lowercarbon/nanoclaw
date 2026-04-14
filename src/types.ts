@@ -92,6 +92,8 @@ export interface Channel {
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
+  // Optional: send a file attachment. Channels that support it implement it.
+  sendFile?(jid: string, filePath: string, filename: string): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.

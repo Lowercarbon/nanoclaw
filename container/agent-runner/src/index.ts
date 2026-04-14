@@ -367,6 +367,28 @@ function waitForIpcMessage(): Promise<string | null> {
 
 /**
  * Run a single query and stream results via writeOutput.
+/** Conditionally register an MCP server if a key file exists and is non-empty. */
+function mcpServerFromKeyFile(
+  name: string,
+  keyPath: string,
+  makeEnv: (key: string) => Record<string, string>,
+): Record<string, { command: string; args: string[]; env: Record<string, string> }> {
+  try {
+    const key = fs.readFileSync(keyPath, 'utf-8').trim();
+    if (!key) return {};
+    return {
+      [name]: {
+        command: 'node',
+        args: [`/app/mcp-servers/${name}/dist/index.js`],
+        env: makeEnv(key),
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
@@ -470,7 +492,10 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__google__*',
-        'mcp__lowercarbon-mcp__*',
+        'mcp__slack__*',
+        'mcp__lowercarbon__*',
+        'mcp__granola__*',
+        'mcp__affinity__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -491,47 +516,52 @@ async function runQuery(
           ? {
               google: {
                 command: 'node',
-                args: [
-                  '/app/mcp-servers/google-calendar-gmail/dist/index.js',
-                ],
+                args: ['/app/mcp-servers/google/dist/index.js'],
                 env: {
                   GOOGLE_CREDENTIALS_PATH:
                     '/workspace/group/reference/google-credentials.json',
                   GOOGLE_TOKEN_PATH:
                     '/workspace/group/reference/google-token.json',
-                  SLACK_BOT_TOKEN: (() => {
-                    const tokenPath = '/workspace/group/reference/slack-bot-token.txt';
-                    try {
-                      return fs.readFileSync(tokenPath, 'utf-8').trim();
-                    } catch {
-                      return '';
-                    }
-                  })(),
-                  LC_MCP_URL: (() => {
-                    const mcpJsonPath = '/workspace/group/.mcp.json';
-                    try {
-                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
-                      return cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
-                    } catch {
-                      return '';
-                    }
-                  })(),
-                  GRANOLA_TOKEN_PATH:
-                    '/workspace/group/reference/granola-token.json',
-                  LC_MCP_API_KEY: (() => {
-                    const mcpJsonPath = '/workspace/group/.mcp.json';
-                    try {
-                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
-                      const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
-                      return auth.replace('Bearer ', '');
-                    } catch {
-                      return '';
-                    }
-                  })(),
                 },
               },
             }
           : {}),
+        ...mcpServerFromKeyFile('slack', '/workspace/group/reference/slack-bot-token.txt', (token) => ({
+          SLACK_BOT_TOKEN: token,
+        })),
+        ...((): Record<string, { command: string; args: string[]; env: Record<string, string> }> => {
+          try {
+            const cfg = JSON.parse(fs.readFileSync('/workspace/group/.mcp.json', 'utf-8'));
+            const url = cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
+            const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
+            const apiKey = auth.replace('Bearer ', '');
+            if (!url || !apiKey) return {};
+            return {
+              lowercarbon: {
+                command: 'node',
+                args: ['/app/mcp-servers/lowercarbon/dist/index.js'],
+                env: { LC_MCP_URL: url, LC_MCP_API_KEY: apiKey },
+              },
+            };
+          } catch {
+            return {};
+          }
+        })(),
+        ...(fs.existsSync('/workspace/group/reference/granola-token.json')
+          ? {
+              granola: {
+                command: 'node',
+                args: ['/app/mcp-servers/granola/dist/index.js'],
+                env: {
+                  GRANOLA_TOKEN_PATH:
+                    '/workspace/group/reference/granola-token.json',
+                },
+              },
+            }
+          : {}),
+        ...mcpServerFromKeyFile('affinity', '/workspace/group/reference/affinity-api-key.txt', (key) => ({
+          AFFINITY_API_KEY: key,
+        })),
       },
       hooks: {
         PreCompact: [
