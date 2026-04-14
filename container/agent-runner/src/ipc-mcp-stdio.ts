@@ -69,42 +69,26 @@ server.tool(
 
 server.tool(
   'send_file',
-  'Send a file attachment to the user or group. Provide EITHER file_path (from download_attachment) OR file_content_base64. Prefer file_path when you have one — it avoids passing binary data through the conversation. The original file is preserved when using file_path.',
+  'Send a file attachment to the user or group. Pass the file_path from download_attachment. The original file is preserved after sending.',
   {
-    file_path: z.string().optional().describe('Path to a file on disk (e.g. from download_attachment). Preferred over base64.'),
-    file_content_base64: z.string().optional().describe('Base64-encoded file content. Use only when you don\'t have a file_path.'),
+    file_path: z.string().describe('Path to a file on disk (from download_attachment)'),
     filename: z.string().describe('The filename (e.g. "pitch-deck.pdf")'),
   },
   async (args) => {
-    // Always write to IPC files dir for the host to pick up.
-    // When file_path points to a persistent location (e.g. company folder),
-    // we copy so the original survives IPC cleanup.
+    if (!fs.existsSync(args.file_path)) {
+      return {
+        content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+        isError: true,
+      };
+    }
+
+    // Copy to IPC dir so the original stays intact for future reads
     const filesDir = path.join(IPC_DIR, 'files');
     fs.mkdirSync(filesDir, { recursive: true });
     const safeFilename = args.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
     const ipcFilePath = path.join(filesDir, `${Date.now()}-${safeFilename}`);
-    let sizeBytes: number;
-
-    if (args.file_path) {
-      if (!fs.existsSync(args.file_path)) {
-        return {
-          content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
-          isError: true,
-        };
-      }
-      // Copy to IPC dir — original stays intact for future reads
-      fs.copyFileSync(args.file_path, ipcFilePath);
-      sizeBytes = fs.statSync(ipcFilePath).size;
-    } else if (args.file_content_base64) {
-      const buffer = Buffer.from(args.file_content_base64, 'base64');
-      fs.writeFileSync(ipcFilePath, buffer);
-      sizeBytes = buffer.length;
-    } else {
-      return {
-        content: [{ type: 'text' as const, text: 'Provide either file_path or file_content_base64.' }],
-        isError: true,
-      };
-    }
+    fs.copyFileSync(args.file_path, ipcFilePath);
+    const sizeBytes = fs.statSync(ipcFilePath).size;
 
     // Write IPC message referencing the copy (host will clean up after upload)
     writeIpcFile(MESSAGES_DIR, {
