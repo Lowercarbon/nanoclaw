@@ -39,26 +39,11 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-// Field ID to readable name mapping for the LC Deal Log (list 205572)
-const FIELD_MAP: Record<string, string> = {
-  'field-3832132': 'Deal Stage',
-  'field-5092585': 'Deal Team',
-  'field-3860236': 'Deal Notes',
-  'field-3832139': 'Pass Reason',
-  'field-4741256': 'Pass Details',
-  'field-3832137': 'Investment Round',
-  'field-4831812': 'Raise Size',
-  'field-4831811': 'Pre-Money Valuation',
-  'field-3832140': 'Deal Source: Person',
-  'field-3832141': 'Deal Source: Org',
-  'field-3832135': 'Deal Source: Channel',
-  'field-4144018': 'Gut Check',
-  'field-4163630': 'Follow On',
-  'field-3857151': 'Proprietary',
-  'field-3836800': 'Deal Start Date',
-  'field-3836801': 'Deal Close Date',
-};
+// No static field ID mapping needed — the v2 API returns human-readable
+// field names directly. The old FIELD_MAP with `field-NNNNNNN` IDs was
+// from the v1 API which used numeric field IDs.
 
+// v2 API: Bearer auth. Used for list entries, notes, etc.
 async function affinityFetch(
   path: string,
   params?: Record<string, string>,
@@ -87,6 +72,46 @@ async function affinityFetch(
   if (!resp.ok) {
     const body = await resp.text();
     throw new Error(`Affinity API error: ${resp.status} ${resp.statusText} — ${body}`);
+  }
+
+  return resp.json();
+}
+
+// v1 API: Basic auth (empty username, API key as password).
+// The v2 /companies endpoint does NOT support text search — the `term`
+// parameter is silently ignored. Company search requires the v1 /organizations
+// endpoint which accepts `term` and returns ranked results.
+const V1_BASE_URL = 'https://api.affinity.co';
+
+async function affinityV1Fetch(
+  path: string,
+  params?: Record<string, string>,
+  retryOn429 = true,
+): Promise<unknown> {
+  const url = new URL(`${V1_BASE_URL}${path}`);
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  const basicAuth = Buffer.from(`:${AFFINITY_API_KEY}`).toString('base64');
+  const resp = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (resp.status === 429 && retryOn429) {
+    log('Rate limited (429), retrying after 2s...');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return affinityV1Fetch(path, params, false);
+  }
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Affinity v1 API error: ${resp.status} ${resp.statusText} — ${body}`);
   }
 
   return resp.json();
@@ -144,11 +169,12 @@ async function main(): Promise<void> {
     },
     async (args) => {
       try {
-        const result = (await affinityFetch('/companies', {
+        // v1 /organizations endpoint supports text search (v2 /companies does not)
+        const result = (await affinityV1Fetch('/organizations', {
           term: args.query,
           page_size: '10',
         })) as {
-          data?: Array<{
+          organizations?: Array<{
             id: number;
             name: string;
             domain?: string;
@@ -162,7 +188,7 @@ async function main(): Promise<void> {
           }>;
         };
 
-        const companies = result.data || [];
+        const companies = result.organizations || [];
         if (companies.length === 0) {
           return {
             content: [
@@ -213,13 +239,26 @@ async function main(): Promise<void> {
     },
     async (args) => {
       try {
-        // Step 1: Get list entries for this company
+        // The v2 /companies/{id}/list-entries endpoint returns entries
+        // WITH fields included — no second API call needed.
         const entriesResult = (await affinityFetch(
           `/companies/${args.company_id}/list-entries`,
-        )) as { data?: Array<{ id: number; list_id: number }> };
+        )) as {
+          data?: Array<{
+            id: number;
+            listId: number;
+            createdAt?: string;
+            entity?: { id: number; name: string };
+            fields?: Array<{
+              id: string;
+              name: string;
+              value: { type: string; data: unknown } | null;
+            }>;
+          }>;
+        };
 
         const entries = entriesResult.data || [];
-        const dealLogEntry = entries.find((e) => e.list_id === DEAL_LOG_LIST_ID);
+        const dealLogEntry = entries.find((e) => e.listId === DEAL_LOG_LIST_ID);
 
         if (!dealLogEntry) {
           return {
@@ -232,33 +271,50 @@ async function main(): Promise<void> {
           };
         }
 
-        // Step 2: Get full list entry with all field types
-        const entryResult = (await affinityFetch(
-          `/lists/${DEAL_LOG_LIST_ID}/list-entries/${dealLogEntry.id}`,
-          { field_types: 'enriched,global,relationship-intelligence,list' },
-        )) as {
-          data?: {
-            id: number;
-            entity?: { id: number; name: string };
-            fields?: Array<{
-              field_id: string;
-              value: unknown;
-            }>;
-          };
-        };
-
-        const entry = entryResult.data || entryResult;
-        const fields = (entry as { fields?: Array<{ field_id: string; value: unknown }> }).fields || [];
-
-        // Map field IDs to readable names
+        // Extract fields — v2 uses {id, name, value: {type, data}} shape.
+        // Surface fields with non-null data, using the human-readable `name`.
+        const fields = dealLogEntry.fields || [];
         const fieldLines: string[] = [];
+
+        if (dealLogEntry.createdAt) {
+          fieldLines.push(
+            `Added to Deal Log: ${new Date(dealLogEntry.createdAt).toISOString().split('T')[0]}`,
+          );
+        }
+
         for (const field of fields) {
-          const readableName = FIELD_MAP[field.field_id];
-          if (readableName) {
-            const value = formatFieldValue(field.value);
-            if (value) {
-              fieldLines.push(`${readableName}: ${value}`);
+          if (!field.value || field.value.data === null || field.value.data === undefined) continue;
+          const data = field.value.data;
+          let formatted: string;
+
+          if (typeof data === 'string') {
+            formatted = data;
+          } else if (typeof data === 'number') {
+            formatted = String(data);
+          } else if (typeof data === 'boolean') {
+            formatted = data ? 'Yes' : 'No';
+          } else if (Array.isArray(data)) {
+            const items = data.filter((v) => v !== null);
+            if (items.length === 0) continue;
+            formatted = items.join(', ');
+          } else if (typeof data === 'object' && data !== null) {
+            // Person or entity reference
+            const obj = data as Record<string, unknown>;
+            if (obj.firstName && obj.lastName) {
+              formatted = `${obj.firstName} ${obj.lastName}`;
+            } else if (obj.name) {
+              formatted = obj.name as string;
+            } else if (obj.text) {
+              formatted = obj.text as string;
+            } else {
+              formatted = JSON.stringify(data);
             }
+          } else {
+            continue;
+          }
+
+          if (formatted && formatted.length > 0) {
+            fieldLines.push(`${field.name}: ${formatted}`);
           }
         }
 

@@ -1,7 +1,7 @@
 ---
 title: "feat: New Deal Briefings + MCP Server Split"
 type: feat
-status: active
+status: completed
 date: 2026-04-14
 origin: docs/superpowers/specs/2026-04-14-new-deal-briefings-design.md
 ---

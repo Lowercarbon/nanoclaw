@@ -93,18 +93,35 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC message attempt blocked',
                   );
                 }
-              } else if (data.type === 'file' && data.chatJid && data.filePath && data.filename) {
+              } else if (
+                data.type === 'file' &&
+                data.chatJid &&
+                data.filePath &&
+                data.filename
+              ) {
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   if (deps.sendFile) {
-                    await deps.sendFile(data.chatJid, data.filePath, data.filename);
+                    await deps.sendFile(
+                      data.chatJid,
+                      data.filePath,
+                      data.filename,
+                    );
                     // Clean up temp file after successful upload
-                    try { fs.unlinkSync(data.filePath); } catch { /* ignore */ }
+                    try {
+                      fs.unlinkSync(data.filePath);
+                    } catch {
+                      /* ignore */
+                    }
                     logger.info(
-                      { chatJid: data.chatJid, filename: data.filename, sourceGroup },
+                      {
+                        chatJid: data.chatJid,
+                        filename: data.filename,
+                        sourceGroup,
+                      },
                       'IPC file sent',
                     );
                   } else {
