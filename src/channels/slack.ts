@@ -1,5 +1,6 @@
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
+import fs from 'fs';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
@@ -194,6 +195,22 @@ export class SlackChannel implements Channel {
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
       );
+    }
+  }
+
+  async sendFile(jid: string, filePath: string, filename: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    try {
+      const fileContent = fs.readFileSync(filePath);
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: fileContent,
+        filename,
+      });
+      logger.info({ jid, filename }, 'Slack file uploaded');
+    } catch (err) {
+      logger.error({ jid, filename, err }, 'Failed to upload file to Slack');
+      throw err;
     }
   }
 

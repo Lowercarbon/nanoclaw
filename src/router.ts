@@ -51,6 +51,18 @@ export function routeOutbound(
   return channel.sendMessage(jid, text);
 }
 
+export async function routeFile(
+  channels: Channel[],
+  jid: string,
+  filePath: string,
+  filename: string,
+): Promise<void> {
+  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
+  if (!channel) throw new Error(`No channel for JID: ${jid}`);
+  if (!channel.sendFile) throw new Error(`Channel ${channel.name} does not support file uploads`);
+  return channel.sendFile(jid, filePath, filename);
+}
+
 export function findChannel(
   channels: Channel[],
   jid: string,

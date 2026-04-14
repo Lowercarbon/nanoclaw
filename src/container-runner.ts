@@ -272,11 +272,11 @@ async function buildContainerArgs(
   if (onecliApplied) {
     args.push(
       '-e',
-      'NO_PROXY=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com',
+      'NO_PROXY=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com,api.affinity.co',
     );
     args.push(
       '-e',
-      'no_proxy=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com',
+      'no_proxy=agents.vectorize.io,mcp.slack.com,mcp.granola.ai,mcp.standardmetrics.io,app.hanoverpark.com,api.affinity.co',
     );
   }
 

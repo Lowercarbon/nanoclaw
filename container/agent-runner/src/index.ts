@@ -470,7 +470,10 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__google__*',
-        'mcp__lowercarbon-mcp__*',
+        'mcp__slack__*',
+        'mcp__lowercarbon__*',
+        'mcp__granola__*',
+        'mcp__affinity__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -491,47 +494,79 @@ async function runQuery(
           ? {
               google: {
                 command: 'node',
-                args: [
-                  '/app/mcp-servers/google-calendar-gmail/dist/index.js',
-                ],
+                args: ['/app/mcp-servers/google/dist/index.js'],
                 env: {
                   GOOGLE_CREDENTIALS_PATH:
                     '/workspace/group/reference/google-credentials.json',
                   GOOGLE_TOKEN_PATH:
                     '/workspace/group/reference/google-token.json',
-                  SLACK_BOT_TOKEN: (() => {
-                    const tokenPath = '/workspace/group/reference/slack-bot-token.txt';
-                    try {
-                      return fs.readFileSync(tokenPath, 'utf-8').trim();
-                    } catch {
-                      return '';
-                    }
-                  })(),
-                  LC_MCP_URL: (() => {
-                    const mcpJsonPath = '/workspace/group/.mcp.json';
-                    try {
-                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
-                      return cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
-                    } catch {
-                      return '';
-                    }
-                  })(),
-                  GRANOLA_TOKEN_PATH:
-                    '/workspace/group/reference/granola-token.json',
-                  LC_MCP_API_KEY: (() => {
-                    const mcpJsonPath = '/workspace/group/.mcp.json';
-                    try {
-                      const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
-                      const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
-                      return auth.replace('Bearer ', '');
-                    } catch {
-                      return '';
-                    }
-                  })(),
                 },
               },
             }
           : {}),
+        ...(() => {
+          const tokenPath = '/workspace/group/reference/slack-bot-token.txt';
+          try {
+            const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+            if (!token) return {};
+            return {
+              slack: {
+                command: 'node',
+                args: ['/app/mcp-servers/slack/dist/index.js'],
+                env: { SLACK_BOT_TOKEN: token },
+              },
+            };
+          } catch {
+            return {};
+          }
+        })(),
+        ...(() => {
+          const mcpJsonPath = '/workspace/group/.mcp.json';
+          try {
+            const cfg = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+            const url = cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
+            const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
+            const apiKey = auth.replace('Bearer ', '');
+            if (!url || !apiKey) return {};
+            return {
+              lowercarbon: {
+                command: 'node',
+                args: ['/app/mcp-servers/lowercarbon/dist/index.js'],
+                env: { LC_MCP_URL: url, LC_MCP_API_KEY: apiKey },
+              },
+            };
+          } catch {
+            return {};
+          }
+        })(),
+        ...(fs.existsSync('/workspace/group/reference/granola-token.json')
+          ? {
+              granola: {
+                command: 'node',
+                args: ['/app/mcp-servers/granola/dist/index.js'],
+                env: {
+                  GRANOLA_TOKEN_PATH:
+                    '/workspace/group/reference/granola-token.json',
+                },
+              },
+            }
+          : {}),
+        ...(() => {
+          const keyPath = '/workspace/group/reference/affinity-api-key.txt';
+          try {
+            const key = fs.readFileSync(keyPath, 'utf-8').trim();
+            if (!key) return {};
+            return {
+              affinity: {
+                command: 'node',
+                args: ['/app/mcp-servers/affinity/dist/index.js'],
+                env: { AFFINITY_API_KEY: key },
+              },
+            };
+          } catch {
+            return {};
+          }
+        })(),
       },
       hooks: {
         PreCompact: [
