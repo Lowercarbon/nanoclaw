@@ -522,6 +522,8 @@ async function runQuery(
                     '/workspace/group/reference/google-credentials.json',
                   GOOGLE_TOKEN_PATH:
                     '/workspace/group/reference/google-token.json',
+                  NANOCLAW_CHAT_JID: containerInput.chatJid,
+                  NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
                 },
               },
             }

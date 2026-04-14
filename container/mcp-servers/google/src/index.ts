@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { google, type calendar_v3, type gmail_v1 } from 'googleapis';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, renameSync } from 'fs';
 import path from 'path';
 import { OAuth2Client } from 'google-auth-library';
 
@@ -636,17 +636,21 @@ async function main(): Promise<void> {
     },
   );
 
-  // download_attachment — fetch and save a Gmail attachment to disk
-  // Returns file path + metadata (NOT base64) to keep binary data out of agent context
+  // download_attachment — fetch, save, and auto-send a Gmail attachment
+  // Writes file to disk AND sends to chat via IPC in one step.
+  // Binary data never enters the model context.
+  const chatJid = process.env.NANOCLAW_CHAT_JID || '';
+  const groupFolder = process.env.NANOCLAW_GROUP_FOLDER || '';
+
   server.tool(
     'download_attachment',
-    'Download a file attachment from a Gmail message and save it to disk. Returns a file_path you can pass to send_file or Read. Use save_dir to persist to a company folder (e.g. "/workspace/group/companies/even-platforms/attachments").',
+    'Download a Gmail attachment, save it to disk, and send it to the user as a chat attachment. Use save_dir to persist to a company folder for follow-up questions (e.g. "/workspace/group/companies/even-platforms/attachments"). The file is automatically delivered to the chat — no need to call send_file separately.',
     {
       message_id: z.string().describe('Gmail message ID (from get_thread results)'),
       attachment_id: z.string().describe('Attachment ID (from get_thread results)'),
       filename: z.string().optional().describe('Filename (from get_thread results, avoids extra API call)'),
       mime_type: z.string().optional().describe('MIME type (from get_thread results, avoids extra API call)'),
-      save_dir: z.string().optional().describe('Directory to save the file in. Defaults to temp IPC dir. Use a persistent path to keep the file for future sessions.'),
+      save_dir: z.string().optional().describe('Directory to save the file in. Use "/workspace/group/companies/{slug}/attachments" to persist for future sessions.'),
     },
     async (args) => {
       try {
@@ -684,22 +688,43 @@ async function main(): Promise<void> {
           }
         }
 
-        // Decode and write to disk — keeps binary data out of the model context
+        // Decode and write to persistent location
         const buffer = Buffer.from(data, 'base64url');
         const targetDir = args.save_dir || '/workspace/ipc/files';
         mkdirSync(targetDir, { recursive: true });
         const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
         const filePath = path.join(targetDir, safeFilename);
         writeFileSync(filePath, buffer);
-
         log(`Attachment saved: ${filePath} (${buffer.length} bytes)`);
+
+        // Auto-send to chat via IPC — copy to IPC files dir so original persists
+        if (chatJid && groupFolder) {
+          const ipcFilesDir = '/workspace/ipc/files';
+          mkdirSync(ipcFilesDir, { recursive: true });
+          const ipcCopy = path.join(ipcFilesDir, `${Date.now()}-${safeFilename}`);
+          copyFileSync(filePath, ipcCopy);
+
+          const ipcMsgDir = '/workspace/ipc/messages';
+          mkdirSync(ipcMsgDir, { recursive: true });
+          const msgFile = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+          const tmpPath = path.join(ipcMsgDir, `${msgFile}.tmp`);
+          writeFileSync(tmpPath, JSON.stringify({
+            type: 'file',
+            chatJid,
+            filePath: ipcCopy,
+            filename,
+            groupFolder,
+            timestamp: new Date().toISOString(),
+          }, null, 2));
+          renameSync(tmpPath, path.join(ipcMsgDir, msgFile));
+          log(`IPC file send queued: ${filename}`);
+        }
 
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ filename, mimeType, filePath, sizeBytes: buffer.length })
-                + `\n\nFile saved to disk. To deliver it to the user, call send_file(file_path="${filePath}", filename="${filename}").`,
+              text: `Downloaded and sent "${filename}" (${buffer.length} bytes). Saved to ${filePath} for future reference.`,
             },
           ],
         };
