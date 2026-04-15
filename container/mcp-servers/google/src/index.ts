@@ -10,7 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { google, type calendar_v3, type gmail_v1 } from 'googleapis';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, renameSync } from 'fs';
 import path from 'path';
 import { OAuth2Client } from 'google-auth-library';
 
@@ -636,16 +636,23 @@ async function main(): Promise<void> {
     },
   );
 
-  // download_attachment — returns base64 for send_file AND saves to disk
+  // download_attachment — downloads, saves to disk, AND auto-sends via IPC
+  // Must handle send internally because the agent may delegate to a sub-agent
+  // whose context is isolated — base64 returned to a sub-agent never reaches
+  // the parent, so send_file never gets called.
+  const ipcChatJid = process.env.NANOCLAW_CHAT_JID || '';
+  const ipcGroupFolder = process.env.NANOCLAW_GROUP_FOLDER || '';
+  log(`IPC env: chatJid=${ipcChatJid ? 'SET' : 'EMPTY'}, groupFolder=${ipcGroupFolder ? 'SET' : 'EMPTY'}`);
+
   server.tool(
     'download_attachment',
-    'Download a file attachment from a Gmail message. Returns base64 content — pass it to send_file to deliver to the user. Also saves to save_dir for future reference.',
+    'Download a Gmail attachment, save it to a company folder, and send it to the user as a chat attachment. All three happen automatically — no need to call send_file.',
     {
       message_id: z.string().describe('Gmail message ID (from get_thread results)'),
       attachment_id: z.string().describe('Attachment ID (from get_thread results)'),
       filename: z.string().optional().describe('Filename (from get_thread results, avoids extra API call)'),
       mime_type: z.string().optional().describe('MIME type (from get_thread results, avoids extra API call)'),
-      save_dir: z.string().optional().describe('Directory to also save the file to (e.g. "/workspace/group/companies/{slug}/attachments")'),
+      save_dir: z.string().optional().describe('Directory to save (e.g. "/workspace/group/companies/{slug}/attachments")'),
     },
     async (args) => {
       try {
@@ -682,24 +689,50 @@ async function main(): Promise<void> {
           }
         }
 
-        // Convert base64url to standard base64
-        const base64 = data.replace(/-/g, '+').replace(/_/g, '/');
-        const sizeBytes = Math.floor((base64.length * 3) / 4);
+        const buffer = Buffer.from(data, 'base64url');
+        const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-        // Also save to disk if save_dir provided (for future reads via Read tool)
+        // Save to persistent company folder
         if (args.save_dir) {
-          const buffer = Buffer.from(data, 'base64url');
           mkdirSync(args.save_dir, { recursive: true });
-          const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
           writeFileSync(path.join(args.save_dir, safeFilename), buffer);
-          log(`Attachment also saved to ${args.save_dir}/${safeFilename}`);
+          log(`Saved to ${args.save_dir}/${safeFilename} (${buffer.length} bytes)`);
         }
 
+        // Auto-send to chat via IPC
+        let sent = false;
+        if (ipcChatJid && ipcGroupFolder) {
+          const ipcFilesDir = '/workspace/ipc/files';
+          mkdirSync(ipcFilesDir, { recursive: true });
+          const ipcFilePath = path.join(ipcFilesDir, `${Date.now()}-${safeFilename}`);
+          writeFileSync(ipcFilePath, buffer);
+
+          const ipcMsgDir = '/workspace/ipc/messages';
+          mkdirSync(ipcMsgDir, { recursive: true });
+          const msgFilename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+          const tmpPath = path.join(ipcMsgDir, `${msgFilename}.tmp`);
+          const ipcMsg = {
+            type: 'file',
+            chatJid: ipcChatJid,
+            filePath: ipcFilePath,
+            filename,
+            groupFolder: ipcGroupFolder,
+            timestamp: new Date().toISOString(),
+          };
+          writeFileSync(tmpPath, JSON.stringify(ipcMsg, null, 2));
+          renameSync(tmpPath, path.join(ipcMsgDir, msgFilename));
+          log(`IPC file send queued: ${filename} → ${ipcFilePath}`);
+          sent = true;
+        } else {
+          log(`WARNING: Cannot auto-send — missing IPC env vars (chatJid=${ipcChatJid}, groupFolder=${ipcGroupFolder})`);
+        }
+
+        const savedTo = args.save_dir ? `${args.save_dir}/${safeFilename}` : '(temp only)';
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ filename, mimeType, base64, sizeBytes }),
+              text: `Downloaded "${filename}" (${buffer.length} bytes). Saved to ${savedTo}.${sent ? ' Sent to chat.' : ' WARNING: Could not auto-send to chat.'}`,
             },
           ],
         };
