@@ -85,6 +85,11 @@ NanoClaw has **three independent caching layers**. Missing any one causes stale 
 | Cached agent-runner | `container/agent-runner/src/` | `data/sessions/<group>/agent-runner-src/` — copied at group creation, mounted into container at runtime, **overrides the Docker image** |
 | Host dist/ | `src/*.ts` host code | `dist/` — launchd runs from main repo |
 
-**Always use `./scripts/deploy-test.sh`** for test deploys. It handles all three layers plus runtime state cleanup (sessions, files, IPC). For host-side `src/*.ts` changes, also run `npm run build` in the main repo.
+**Always use `./scripts/deploy-test.sh`** for test deploys. It now prompts for:
+- Build mode: `restart`, `cached`, or `full`
+- Reset mode: `keep`, `memory`, `attachments`, or `full`
+- Host build: `skip` or `build` (with a recommendation based on your recent changes)
+
+Use `attachments` when you need to prove a deck/file was freshly downloaded and re-sent, `memory` when you only need a fresh Claude conversation, and `full` when you want the old behavior for major runtime/container changes. If the script recommends a host build, it will run `npm run build` and sync `dist/` into the live project for you.
 
 **Never use `./container/build.sh` alone** — it doesn't sync the cached agent-runner or clear sessions.
