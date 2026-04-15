@@ -99,6 +99,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 data.filePath &&
                 data.filename
               ) {
+                // Translate container path to host path.
+                // Container writes to /workspace/ipc/files/..., which is
+                // bind-mounted from the host's IPC directory for this group.
+                const hostFilePath = (data.filePath as string).startsWith(
+                  '/workspace/ipc/',
+                )
+                  ? path.join(
+                      ipcBaseDir,
+                      sourceGroup,
+                      (data.filePath as string).slice(
+                        '/workspace/ipc/'.length,
+                      ),
+                    )
+                  : data.filePath;
+
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
@@ -107,12 +122,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   if (deps.sendFile) {
                     await deps.sendFile(
                       data.chatJid,
-                      data.filePath,
+                      hostFilePath,
                       data.filename,
                     );
                     // Clean up temp file after successful upload
                     try {
-                      fs.unlinkSync(data.filePath);
+                      fs.unlinkSync(hostFilePath);
                     } catch {
                       /* ignore */
                     }
