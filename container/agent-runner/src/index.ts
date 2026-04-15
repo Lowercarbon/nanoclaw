@@ -530,6 +530,8 @@ async function runQuery(
           : {}),
         ...mcpServerFromKeyFile('slack', '/workspace/group/reference/slack-bot-token.txt', (token) => ({
           SLACK_BOT_TOKEN: token,
+          NANOCLAW_CHAT_JID: containerInput.chatJid,
+          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
         })),
         ...((): Record<string, { command: string; args: string[]; env: Record<string, string> }> => {
           try {
