@@ -32,6 +32,17 @@ rm -rf "$PROJECT_DIR"/data/ipc/*/files/*
 echo "Cleared group data and IPC files"
 
 echo ""
+echo "=== Syncing cached agent-runner source ==="
+# The container-runner copies agent-runner/src/ into data/sessions/<group>/agent-runner-src/
+# at group creation time. This cache goes stale when we modify the source.
+for cached_dir in "$PROJECT_DIR"/data/sessions/*/agent-runner-src/; do
+  if [ -d "$cached_dir" ]; then
+    cp "$WORKTREE_DIR"/container/agent-runner/src/*.ts "$cached_dir" 2>/dev/null && \
+      echo "Synced: $cached_dir" || true
+  fi
+done
+
+echo ""
 echo "=== Clearing agent sessions ==="
 DB_PATH="$PROJECT_DIR/store/messages.db"
 if [ -f "$DB_PATH" ]; then
