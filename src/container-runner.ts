@@ -65,22 +65,27 @@ const GROUP_SECRET_FILES = [
   {
     hostRelativePath: path.join('reference', 'google-credentials.json'),
     privateFileName: 'google-credentials.json',
+    readonly: true,
   },
   {
     hostRelativePath: path.join('reference', 'google-token.json'),
     privateFileName: 'google-token.json',
+    readonly: false,
   },
   {
     hostRelativePath: path.join('reference', 'slack-bot-token.txt'),
     privateFileName: 'slack-bot-token.txt',
+    readonly: true,
   },
   {
     hostRelativePath: path.join('reference', 'granola-token.json'),
     privateFileName: 'granola-token.json',
+    readonly: true,
   },
   {
     hostRelativePath: path.join('reference', 'affinity-api-key.txt'),
     privateFileName: 'affinity-api-key.txt',
+    readonly: true,
   },
 ] as const;
 
@@ -124,7 +129,7 @@ function syncGroupPrivateSecrets(
         CONTAINER_SECRET_DIR,
         secretFile.privateFileName,
       ),
-      readonly: true,
+      readonly: secretFile.readonly,
     });
   }
 

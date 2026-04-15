@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { spawn } from 'child_process';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -134,6 +135,7 @@ describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fakeProc = createFakeProcess();
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -225,5 +227,53 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('mounts the private Google token path writable for refreshes', async () => {
+    const fs = (await import('fs')).default;
+    vi.mocked(fs.existsSync).mockImplementation((target) => {
+      const value = String(target);
+      return (
+        value === '/tmp/nanoclaw-test-groups/test-group/reference/google-credentials.json' ||
+        value === '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json'
+      );
+    });
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(spawn)).toHaveBeenCalledTimes(1);
+    });
+    const spawnCalls = vi.mocked(spawn).mock.calls;
+    expect(spawnCalls).toHaveLength(1);
+    const containerArgs = spawnCalls[0]?.[1] as string[];
+
+    expect(containerArgs).toContain(
+      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-token.json:/run/nanoclaw-secrets/google-token.json',
+    );
+    expect(containerArgs).toContain(
+      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-credentials.json:/run/nanoclaw-secrets/google-credentials.json:ro',
+    );
+    expect(containerArgs).not.toContain(
+      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-token.json:/run/nanoclaw-secrets/google-token.json:ro',
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done',
+      newSessionId: 'session-789',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
   });
 });
