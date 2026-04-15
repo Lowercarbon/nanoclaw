@@ -2,12 +2,17 @@
  * Slack MCP Server for NanoClaw
  *
  * Provides read-only access to Slack channels and messages via stdio MCP protocol.
- * Auth: reads SLACK_BOT_TOKEN from environment.
+ * Auth: reads SLACK_BOT_TOKEN (required) and SLACK_USER_TOKEN (optional) from environment.
  * Uses Node.js built-in fetch (no Slack SDK dependency).
+ *
+ * When SLACK_USER_TOKEN is available, search_slack_messages uses Slack's
+ * search.messages API for relevance-ranked results across all time.
+ * Without it, falls back to conversations.history (time-windowed, no ranking).
  *
  * Tools:
  *   - search_slack_channel: find channels by name
- *   - search_slack_messages: read channel history with file attachment metadata
+ *   - search_slack_messages: search/browse channel messages with file attachment metadata
+ *   - get_slack_thread: expand a thread to see all replies
  *   - download_slack_file: fetch file content via url_private_download
  */
 
@@ -18,6 +23,7 @@ import { writeFileSync, mkdirSync, copyFileSync, renameSync } from 'fs';
 import path from 'path';
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+const SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN || '';
 const IPC_CHAT_JID = process.env.NANOCLAW_CHAT_JID || '';
 const IPC_GROUP_FOLDER = process.env.NANOCLAW_GROUP_FOLDER || '';
 
@@ -39,6 +45,19 @@ interface SlackMessage {
   user?: string;
   text: string;
   ts: string;
+  files?: SlackFile[];
+  channel?: { id: string; name: string };
+  permalink?: string;
+}
+
+interface SlackSearchMatch {
+  iid: string;
+  ts: string;
+  text: string;
+  user: string;
+  username: string;
+  channel: { id: string; name: string };
+  permalink: string;
   files?: SlackFile[];
 }
 
@@ -171,21 +190,21 @@ async function main(): Promise<void> {
 
   server.tool(
     'search_slack_messages',
-    'Search for messages in a Slack channel. Use after finding the channel ID with search_slack_channel. Returns message text and any file attachments (name, ID, mimetype, size, download URL) when present.',
+    'Search for messages in a Slack channel. Use after finding the channel ID with search_slack_channel. Returns message text and any file attachments (name, ID, mimetype, size, download URL) when present. When a query is provided, uses Slack search API for relevance-ranked results across all time. Without a query, returns the most recent messages.',
     {
       channel_id: z.string().describe('Slack channel ID (e.g. "C0ABC123")'),
       query: z
         .string()
         .optional()
         .describe(
-          'Optional text to search for within the channel. If omitted, returns the most recent messages.',
+          'Search query — results are ranked by relevance across all time (not limited to a time window). If omitted, returns the most recent messages chronologically.',
         ),
       days: z
         .number()
         .int()
-        .default(30)
+        .default(90)
         .describe(
-          'How many days back to search (default 30)',
+          'How many days back to look when browsing without a query (default 90). Ignored when query is provided (search spans all time).',
         ),
       max_results: z
         .number()
@@ -195,6 +214,84 @@ async function main(): Promise<void> {
     },
     async (args) => {
       try {
+        // --- Path A: query provided → use search.messages for relevance ranking ---
+        if (args.query && SLACK_USER_TOKEN) {
+          log(`Searching channel ${args.channel_id} for "${args.query}" via search.messages`);
+          const searchUrl = new URL('https://slack.com/api/search.messages');
+          searchUrl.searchParams.set('query', `${args.query} in:<#${args.channel_id}>`);
+          searchUrl.searchParams.set('count', String(Math.min(args.max_results, 50)));
+          searchUrl.searchParams.set('sort', 'score');
+
+          const searchResp = await fetch(searchUrl.toString(), {
+            headers: { Authorization: `Bearer ${SLACK_USER_TOKEN}` },
+          });
+          const searchData = (await searchResp.json()) as {
+            ok: boolean;
+            error?: string;
+            messages?: {
+              total: number;
+              matches: SlackSearchMatch[];
+            };
+          };
+
+          if (!searchData.ok) {
+            log(`search.messages failed: ${searchData.error}, falling back to conversations.history`);
+            // Fall through to Path B below
+          } else {
+            const matches = searchData.messages?.matches || [];
+
+            if (matches.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `No messages found in channel matching "${args.query}" (searched all time, ${searchData.messages?.total || 0} total results).`,
+                  },
+                ],
+              };
+            }
+
+            let totalFiles = 0;
+            const formatted = matches.map((match) => {
+              const date = new Date(parseFloat(match.ts) * 1000).toISOString();
+              const user = match.username || match.user || 'unknown';
+              const text =
+                match.text.length > 500
+                  ? match.text.slice(0, 500) + '...'
+                  : match.text;
+
+              let line = `[${date}] (ts=${match.ts}) <@${user}>: ${text}`;
+
+              if (match.files && match.files.length > 0) {
+                totalFiles += match.files.length;
+                const fileLines = match.files.map(formatFileInfo);
+                line += '\n' + fileLines.join('\n');
+              }
+
+              if (match.permalink) {
+                line += `\n    [permalink: ${match.permalink}]`;
+              }
+
+              return line;
+            });
+
+            let summary = `Found ${matches.length} messages matching "${args.query}" (ranked by relevance, searched all time)`;
+            if (totalFiles > 0) {
+              summary += `, ${totalFiles} file attachment(s)`;
+            }
+            summary += ':\n\n' + formatted.join('\n\n');
+
+            return {
+              content: [{ type: 'text' as const, text: summary }],
+            };
+          }
+        }
+
+        // --- Path B: no query or no user token → conversations.history ---
+        if (args.query && !SLACK_USER_TOKEN) {
+          log('No SLACK_USER_TOKEN — falling back to conversations.history (no relevance ranking)');
+        }
+
         const oldest = Math.floor(
           (Date.now() - args.days * 24 * 60 * 60 * 1000) / 1000,
         );
@@ -280,22 +377,14 @@ async function main(): Promise<void> {
           }
         }
 
-        let messages = data.messages || [];
-
-        // Filter by query text if provided
-        if (args.query) {
-          const q = args.query.toLowerCase();
-          messages = messages.filter((m) =>
-            m.text.toLowerCase().includes(q),
-          );
-        }
+        const messages = data.messages || [];
 
         if (messages.length === 0) {
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `No messages found in channel${args.query ? ` matching "${args.query}"` : ''} in the last ${args.days} days.`,
+                text: `No messages found in channel in the last ${args.days} days.`,
               },
             ],
           };
@@ -314,7 +403,7 @@ async function main(): Promise<void> {
               ? msg.text.slice(0, 500) + '...'
               : msg.text;
 
-          let line = `[${date}] <@${user}>: ${text}`;
+          let line = `[${date}] (ts=${msg.ts}) <@${user}>: ${text}`;
 
           // Include file attachment metadata when present
           if (msg.files && msg.files.length > 0) {
@@ -327,6 +416,9 @@ async function main(): Promise<void> {
         });
 
         let summary = `Found ${messages.length} messages (last ${args.days} days)`;
+        if (args.query) {
+          summary += ` [no search ranking available — scan all messages for "${args.query}"]`;
+        }
         if (totalFiles > 0) {
           summary += `, ${totalFiles} file attachment(s)`;
         }
@@ -346,6 +438,106 @@ async function main(): Promise<void> {
             {
               type: 'text' as const,
               text: `Error searching Slack messages: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ============ get_slack_thread ============
+
+  server.tool(
+    'get_slack_thread',
+    'Get all replies in a Slack thread. Use after search_slack_messages to expand a thread and see the full conversation. Thread replies often contain the most valuable context (reactions, concerns, follow-ups).',
+    {
+      channel_id: z.string().describe('Slack channel ID'),
+      thread_ts: z
+        .string()
+        .describe(
+          'Timestamp of the parent message (the "ts" field from search_slack_messages results). This identifies the thread.',
+        ),
+    },
+    async (args) => {
+      try {
+        const url = new URL('https://slack.com/api/conversations.replies');
+        url.searchParams.set('channel', args.channel_id);
+        url.searchParams.set('ts', args.thread_ts);
+        url.searchParams.set('limit', '50');
+
+        const resp = await fetch(url.toString(), {
+          headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` },
+        });
+        const data = (await resp.json()) as {
+          ok: boolean;
+          error?: string;
+          messages?: SlackMessage[];
+        };
+
+        if (!data.ok) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Slack API error: ${data.error || 'unknown'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const messages = data.messages || [];
+
+        if (messages.length <= 1) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'No replies in this thread (only the parent message).',
+              },
+            ],
+          };
+        }
+
+        // Skip the first message (parent) — the agent already has it from search
+        const replies = messages.slice(1);
+        let totalFiles = 0;
+
+        const formatted = replies.map((msg) => {
+          const date = new Date(parseFloat(msg.ts) * 1000).toISOString();
+          const user = msg.user || 'unknown';
+          const text =
+            msg.text.length > 500
+              ? msg.text.slice(0, 500) + '...'
+              : msg.text;
+
+          let line = `[${date}] <@${user}>: ${text}`;
+
+          if (msg.files && msg.files.length > 0) {
+            totalFiles += msg.files.length;
+            const fileLines = msg.files.map(formatFileInfo);
+            line += '\n' + fileLines.join('\n');
+          }
+
+          return line;
+        });
+
+        let summary = `Thread has ${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
+        if (totalFiles > 0) {
+          summary += `, ${totalFiles} file attachment(s)`;
+        }
+        summary += ':\n\n' + formatted.join('\n\n');
+
+        return {
+          content: [{ type: 'text' as const, text: summary }],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Error fetching thread: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

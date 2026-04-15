@@ -78,6 +78,11 @@ const GROUP_SECRET_FILES = [
     readonly: true,
   },
   {
+    hostRelativePath: path.join('reference', 'slack-user-token.txt'),
+    privateFileName: 'slack-user-token.txt',
+    readonly: true,
+  },
+  {
     hostRelativePath: path.join('reference', 'granola-token.json'),
     privateFileName: 'granola-token.json',
     readonly: false,

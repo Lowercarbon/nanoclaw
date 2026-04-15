@@ -73,6 +73,10 @@ const SLACK_BOT_TOKEN_PATH = path.join(
   PRIVATE_SECRET_DIR,
   'slack-bot-token.txt',
 );
+const SLACK_USER_TOKEN_PATH = path.join(
+  PRIVATE_SECRET_DIR,
+  'slack-user-token.txt',
+);
 const GRANOLA_TOKEN_PATH = path.join(PRIVATE_SECRET_DIR, 'granola-token.json');
 const AFFINITY_API_KEY_PATH = path.join(
   PRIVATE_SECRET_DIR,
@@ -567,11 +571,21 @@ async function runQuery(
               },
             }
           : {}),
-        ...mcpServerFromKeyFile('slack', SLACK_BOT_TOKEN_PATH, (token) => ({
-          SLACK_BOT_TOKEN: token,
-          NANOCLAW_CHAT_JID: containerInput.chatJid,
-          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-        })),
+        ...mcpServerFromKeyFile('slack', SLACK_BOT_TOKEN_PATH, (botToken) => {
+          // Optionally include user token for search.messages API (relevance-ranked search)
+          let userToken = '';
+          try {
+            userToken = fs.readFileSync(SLACK_USER_TOKEN_PATH, 'utf-8').trim();
+          } catch {
+            // No user token — search falls back to conversations.history
+          }
+          return {
+            SLACK_BOT_TOKEN: botToken,
+            ...(userToken ? { SLACK_USER_TOKEN: userToken } : {}),
+            NANOCLAW_CHAT_JID: containerInput.chatJid,
+            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+          };
+        }),
         ...((): Record<string, { command: string; args: string[]; env: Record<string, string> }> => {
           const cfg = readLowercarbonConfig();
           if (!cfg) {
