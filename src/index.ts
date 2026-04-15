@@ -750,6 +750,7 @@ async function main(): Promise<void> {
         );
       return channel.sendFile(jid, filePath, filename);
     },
+    shouldDeferFileUpload: (jid) => queue.shouldDeferFileUpload(jid),
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

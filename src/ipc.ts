@@ -13,6 +13,7 @@ import { RegisteredGroup } from './types.js';
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   sendFile?: (jid: string, filePath: string, filename: string) => Promise<void>;
+  shouldDeferFileUpload?: (jid: string) => boolean;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -102,7 +103,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
         if (fs.existsSync(messagesDir)) {
           const messageFiles = fs
             .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
@@ -157,6 +159,18 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
+                  if (deps.shouldDeferFileUpload?.(data.chatJid)) {
+                    logger.debug(
+                      {
+                        chatJid: data.chatJid,
+                        filename: data.filename,
+                        sourceGroup,
+                      },
+                      'Deferring IPC file upload until response output finishes',
+                    );
+                    continue;
+                  }
+
                   if (deps.sendFile) {
                     await deps.sendFile(
                       data.chatJid,
@@ -217,7 +231,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
         if (fs.existsSync(tasksDir)) {
           const taskFiles = fs
             .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
             try {

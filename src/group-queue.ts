@@ -154,6 +154,15 @@ export class GroupQueue {
   }
 
   /**
+   * File uploads should wait until the active response has finished streaming.
+   * Once the container is idle-waiting, the last text reply has already been sent.
+   */
+  shouldDeferFileUpload(groupJid: string): boolean {
+    const state = this.getGroup(groupJid);
+    return state.active && !state.idleWaiting;
+  }
+
+  /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */
