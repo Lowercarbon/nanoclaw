@@ -234,8 +234,10 @@ describe('container-runner timeout behavior', () => {
     vi.mocked(fs.existsSync).mockImplementation((target) => {
       const value = String(target);
       return (
-        value === '/tmp/nanoclaw-test-groups/test-group/reference/google-credentials.json' ||
-        value === '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json'
+        value ===
+          '/tmp/nanoclaw-test-groups/test-group/reference/google-credentials.json' ||
+        value ===
+          '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json'
       );
     });
 
