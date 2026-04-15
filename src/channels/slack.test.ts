@@ -106,6 +106,23 @@ function createTestOpts(
   };
 }
 
+function expectedSlackPost(
+  channel: string,
+  text: string,
+): {
+  channel: string;
+  text: string;
+  unfurl_links: false;
+  unfurl_media: false;
+} {
+  return {
+    channel,
+    text,
+    unfurl_links: false,
+    unfurl_media: false,
+  };
+}
+
 function createMessageEvent(overrides: {
   channel?: string;
   channelType?: string;
@@ -578,10 +595,9 @@ describe('SlackChannel', () => {
 
       await channel.sendMessage('slack:C0123456789', 'Hello');
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'Hello',
-      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith(
+        expectedSlackPost('C0123456789', 'Hello'),
+      );
     });
 
     it('strips slack: prefix from JID', async () => {
@@ -591,10 +607,9 @@ describe('SlackChannel', () => {
 
       await channel.sendMessage('slack:D9876543210', 'DM message');
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'D9876543210',
-        text: 'DM message',
-      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith(
+        expectedSlackPost('D9876543210', 'DM message'),
+      );
     });
 
     it('queues message when disconnected', async () => {
@@ -633,14 +648,14 @@ describe('SlackChannel', () => {
 
       // Should be split into 2 messages: 4000 + 500
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(1, {
-        channel: 'C0123456789',
-        text: 'A'.repeat(4000),
-      });
-      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(2, {
-        channel: 'C0123456789',
-        text: 'A'.repeat(500),
-      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(
+        1,
+        expectedSlackPost('C0123456789', 'A'.repeat(4000)),
+      );
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(
+        2,
+        expectedSlackPost('C0123456789', 'A'.repeat(500)),
+      );
     });
 
     it('sends exactly-4000-char messages as a single message', async () => {
@@ -652,10 +667,9 @@ describe('SlackChannel', () => {
       await channel.sendMessage('slack:C0123456789', text);
 
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text,
-      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith(
+        expectedSlackPost('C0123456789', text),
+      );
     });
 
     it('splits messages into 3 parts when over 8000 chars', async () => {
@@ -683,14 +697,12 @@ describe('SlackChannel', () => {
       // Connect triggers flush
       await channel.connect();
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'First queued',
-      });
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'Second queued',
-      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith(
+        expectedSlackPost('C0123456789', 'First queued'),
+      );
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith(
+        expectedSlackPost('C0123456789', 'Second queued'),
+      );
     });
   });
 

@@ -63,6 +63,25 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+const PRIVATE_SECRET_DIR = '/run/nanoclaw-secrets';
+const GOOGLE_CREDENTIALS_PATH = path.join(
+  PRIVATE_SECRET_DIR,
+  'google-credentials.json',
+);
+const GOOGLE_TOKEN_PATH = path.join(PRIVATE_SECRET_DIR, 'google-token.json');
+const SLACK_BOT_TOKEN_PATH = path.join(
+  PRIVATE_SECRET_DIR,
+  'slack-bot-token.txt',
+);
+const GRANOLA_TOKEN_PATH = path.join(PRIVATE_SECRET_DIR, 'granola-token.json');
+const AFFINITY_API_KEY_PATH = path.join(
+  PRIVATE_SECRET_DIR,
+  'affinity-api-key.txt',
+);
+const LOWERCARBON_CONFIG_PATH = path.join(
+  PRIVATE_SECRET_DIR,
+  'lowercarbon-config.json',
+);
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -388,6 +407,28 @@ function mcpServerFromKeyFile(
   }
 }
 
+function readLowercarbonConfig():
+  | { url: string; authorization: string }
+  | null {
+  try {
+    const config = JSON.parse(
+      fs.readFileSync(LOWERCARBON_CONFIG_PATH, 'utf-8'),
+    ) as {
+      url?: string;
+      authorization?: string;
+    };
+    if (!config.url || !config.authorization) {
+      return null;
+    }
+    return {
+      url: config.url,
+      authorization: config.authorization,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
  * allowing agent teams subagents to run to completion.
@@ -511,59 +552,53 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        ...(fs.existsSync('/workspace/group/reference/google-credentials.json') &&
-        fs.existsSync('/workspace/group/reference/google-token.json')
+        ...(fs.existsSync(GOOGLE_CREDENTIALS_PATH) &&
+        fs.existsSync(GOOGLE_TOKEN_PATH)
           ? {
               google: {
                 command: 'node',
                 args: ['/app/mcp-servers/google/dist/index.js'],
                 env: {
-                  GOOGLE_CREDENTIALS_PATH:
-                    '/workspace/group/reference/google-credentials.json',
-                  GOOGLE_TOKEN_PATH:
-                    '/workspace/group/reference/google-token.json',
+                  GOOGLE_CREDENTIALS_PATH,
+                  GOOGLE_TOKEN_PATH,
                   NANOCLAW_CHAT_JID: containerInput.chatJid,
                   NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
                 },
               },
             }
           : {}),
-        ...mcpServerFromKeyFile('slack', '/workspace/group/reference/slack-bot-token.txt', (token) => ({
+        ...mcpServerFromKeyFile('slack', SLACK_BOT_TOKEN_PATH, (token) => ({
           SLACK_BOT_TOKEN: token,
           NANOCLAW_CHAT_JID: containerInput.chatJid,
           NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
         })),
         ...((): Record<string, { command: string; args: string[]; env: Record<string, string> }> => {
-          try {
-            const cfg = JSON.parse(fs.readFileSync('/workspace/group/.mcp.json', 'utf-8'));
-            const url = cfg.mcpServers?.['lowercarbon-mcp']?.url || '';
-            const auth = cfg.mcpServers?.['lowercarbon-mcp']?.headers?.Authorization || '';
-            const apiKey = auth.replace('Bearer ', '');
-            if (!url || !apiKey) return {};
-            return {
-              lowercarbon: {
-                command: 'node',
-                args: ['/app/mcp-servers/lowercarbon/dist/index.js'],
-                env: { LC_MCP_URL: url, LC_MCP_API_KEY: apiKey },
-              },
-            };
-          } catch {
+          const cfg = readLowercarbonConfig();
+          if (!cfg) {
             return {};
           }
+          const apiKey = cfg.authorization.replace('Bearer ', '');
+          if (!apiKey) return {};
+          return {
+            lowercarbon: {
+              command: 'node',
+              args: ['/app/mcp-servers/lowercarbon/dist/index.js'],
+              env: { LC_MCP_URL: cfg.url, LC_MCP_API_KEY: apiKey },
+            },
+          };
         })(),
-        ...(fs.existsSync('/workspace/group/reference/granola-token.json')
+        ...(fs.existsSync(GRANOLA_TOKEN_PATH)
           ? {
               granola: {
                 command: 'node',
                 args: ['/app/mcp-servers/granola/dist/index.js'],
                 env: {
-                  GRANOLA_TOKEN_PATH:
-                    '/workspace/group/reference/granola-token.json',
+                  GRANOLA_TOKEN_PATH,
                 },
               },
             }
           : {}),
-        ...mcpServerFromKeyFile('affinity', '/workspace/group/reference/affinity-api-key.txt', (key) => ({
+        ...mcpServerFromKeyFile('affinity', AFFINITY_API_KEY_PATH, (key) => ({
           AFFINITY_API_KEY: key,
         })),
       },
@@ -703,8 +738,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
-  // No real secrets exist in the container environment.
+  // OneCLI injects proxied credentials where available. Some MCP integrations
+  // also receive host-managed secrets mounted outside /workspace/group.
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',

@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -58,6 +59,215 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+const CONTAINER_SECRET_DIR = '/run/nanoclaw-secrets';
+const WORKSPACE_GROUP_DIR = '/workspace/group';
+const GROUP_SECRET_FILES = [
+  {
+    hostRelativePath: path.join('reference', 'google-credentials.json'),
+    privateFileName: 'google-credentials.json',
+  },
+  {
+    hostRelativePath: path.join('reference', 'google-token.json'),
+    privateFileName: 'google-token.json',
+  },
+  {
+    hostRelativePath: path.join('reference', 'slack-bot-token.txt'),
+    privateFileName: 'slack-bot-token.txt',
+  },
+  {
+    hostRelativePath: path.join('reference', 'granola-token.json'),
+    privateFileName: 'granola-token.json',
+  },
+  {
+    hostRelativePath: path.join('reference', 'affinity-api-key.txt'),
+    privateFileName: 'affinity-api-key.txt',
+  },
+] as const;
+
+type AgentRunnerSourceManifest = Record<string, string>;
+
+function toContainerGroupPath(relativePath: string): string {
+  return path.posix.join(
+    WORKSPACE_GROUP_DIR,
+    relativePath.split(path.sep).join(path.posix.sep),
+  );
+}
+
+function syncGroupPrivateSecrets(
+  groupDir: string,
+  groupFolder: string,
+): VolumeMount[] {
+  const mounts: VolumeMount[] = [];
+  const secretDir = path.join(
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    'private-secrets',
+  );
+  fs.mkdirSync(secretDir, { recursive: true });
+
+  for (const secretFile of GROUP_SECRET_FILES) {
+    const hostPath = path.join(groupDir, secretFile.hostRelativePath);
+    if (!fs.existsSync(hostPath)) continue;
+
+    const privateHostPath = path.join(secretDir, secretFile.privateFileName);
+    fs.copyFileSync(hostPath, privateHostPath);
+
+    mounts.push({
+      hostPath: '/dev/null',
+      containerPath: toContainerGroupPath(secretFile.hostRelativePath),
+      readonly: true,
+    });
+    mounts.push({
+      hostPath: privateHostPath,
+      containerPath: path.posix.join(
+        CONTAINER_SECRET_DIR,
+        secretFile.privateFileName,
+      ),
+      readonly: true,
+    });
+  }
+
+  const mcpConfigPath = path.join(groupDir, '.mcp.json');
+  if (!fs.existsSync(mcpConfigPath)) {
+    return mounts;
+  }
+
+  try {
+    const rawConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8')) as {
+      mcpServers?: Record<
+        string,
+        {
+          url?: string;
+          headers?: Record<string, string>;
+        }
+      >;
+    };
+
+    const sanitizedConfig = JSON.parse(
+      JSON.stringify(rawConfig),
+    ) as typeof rawConfig;
+    const lowercarbon = rawConfig.mcpServers?.['lowercarbon-mcp'];
+    const authorization = lowercarbon?.headers?.Authorization;
+
+    if (lowercarbon?.url && authorization) {
+      const lowercarbonSecretPath = path.join(
+        secretDir,
+        'lowercarbon-config.json',
+      );
+      fs.writeFileSync(
+        lowercarbonSecretPath,
+        JSON.stringify(
+          {
+            url: lowercarbon.url,
+            authorization,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      mounts.push({
+        hostPath: lowercarbonSecretPath,
+        containerPath: path.posix.join(
+          CONTAINER_SECRET_DIR,
+          'lowercarbon-config.json',
+        ),
+        readonly: true,
+      });
+    }
+
+    const sanitizedLowercarbon =
+      sanitizedConfig.mcpServers?.['lowercarbon-mcp'];
+    if (sanitizedLowercarbon?.headers) {
+      delete sanitizedLowercarbon.headers.Authorization;
+      if (Object.keys(sanitizedLowercarbon.headers).length === 0) {
+        delete sanitizedLowercarbon.headers;
+      }
+    }
+
+    const sanitizedMcpConfigPath = path.join(secretDir, 'workspace-mcp.json');
+    fs.writeFileSync(
+      sanitizedMcpConfigPath,
+      JSON.stringify(sanitizedConfig, null, 2) + '\n',
+    );
+    mounts.push({
+      hostPath: sanitizedMcpConfigPath,
+      containerPath: toContainerGroupPath('.mcp.json'),
+      readonly: true,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, groupFolder },
+      'Failed to sanitize group .mcp.json; shadowing it from the workspace',
+    );
+    mounts.push({
+      hostPath: '/dev/null',
+      containerPath: toContainerGroupPath('.mcp.json'),
+      readonly: true,
+    });
+  }
+
+  return mounts;
+}
+
+function buildAgentRunnerSourceManifest(
+  dir: string,
+): AgentRunnerSourceManifest {
+  const manifest: AgentRunnerSourceManifest = {};
+
+  const walk = (currentDir: string) => {
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const relativePath = path.relative(dir, fullPath);
+      const hash = createHash('sha1')
+        .update(fs.readFileSync(fullPath))
+        .digest('hex');
+      manifest[relativePath] = hash;
+    }
+  };
+
+  walk(dir);
+  return manifest;
+}
+
+function readAgentRunnerSourceManifest(
+  manifestPath: string,
+): AgentRunnerSourceManifest | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(manifestPath, 'utf-8'),
+    ) as AgentRunnerSourceManifest;
+  } catch {
+    return null;
+  }
+}
+
+function syncAgentRunnerSourceCache(
+  sourceDir: string,
+  cachedDir: string,
+): void {
+  const manifestPath = path.join(cachedDir, '.nanoclaw-source-manifest.json');
+  const sourceManifest = buildAgentRunnerSourceManifest(sourceDir);
+  const cachedManifest = readAgentRunnerSourceManifest(manifestPath);
+
+  if (JSON.stringify(sourceManifest) === JSON.stringify(cachedManifest)) {
+    return;
+  }
+
+  fs.mkdirSync(cachedDir, { recursive: true });
+  fs.cpSync(sourceDir, cachedDir, { recursive: true, force: true });
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify(sourceManifest, null, 2) + '\n',
+  );
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -78,8 +288,8 @@ function buildVolumeMounts(
       readonly: true,
     });
 
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Credentials are injected by the OneCLI gateway, never exposed to containers.
+    // Shadow .env so the agent cannot read project-root secrets from the
+    // mounted workspace. MCP-specific credentials are handled separately.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
@@ -133,6 +343,10 @@ function buildVolumeMounts(
       });
     }
   }
+
+  // Shadow workspace-visible secret files and remount them under a private path
+  // used only by the runner/MCP server configuration layer.
+  mounts.push(...syncGroupPrivateSecrets(groupDir, group.folder));
 
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
@@ -212,16 +426,7 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
-    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
-    const needsCopy =
-      !fs.existsSync(groupAgentRunnerDir) ||
-      !fs.existsSync(cachedIndex) ||
-      (fs.existsSync(srcIndex) &&
-        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
-    if (needsCopy) {
-      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-    }
+    syncAgentRunnerSourceCache(agentRunnerSrc, groupAgentRunnerDir);
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -252,8 +457,9 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
+  // OneCLI handles credential injection for proxied services. Some MCP
+  // integrations still rely on host-managed private mounts outside the
+  // workspace-visible group directory.
   const onecliApplied = await onecli.applyContainerConfig(args, {
     addHostMapping: false, // Nanoclaw already handles host gateway
     agent: agentIdentifier,

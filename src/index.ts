@@ -51,6 +51,7 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
+  isRemoteControlAuthorized,
   restoreRemoteControl,
   startRemoteControl,
   stopRemoteControl,
@@ -297,7 +298,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Heuristic: if >30% of chars are non-printable or the text looks like a base64 blob, drop it.
       const nonPrintableRatio =
         text.length > 0
-          ? (text.replace(/[\x20-\x7E\n\r\t]/g, '').length / text.length)
+          ? text.replace(/[\x20-\x7E\n\r\t]/g, '').length / text.length
           : 0;
       const looksLikeBinary =
         nonPrintableRatio > 0.3 ||
@@ -620,6 +621,13 @@ async function main(): Promise<void> {
       );
       return;
     }
+    if (!isRemoteControlAuthorized(group.isMain, msg)) {
+      logger.warn(
+        { chatJid, sender: msg.sender },
+        'Remote control rejected: command must be self-sent in the main group',
+      );
+      return;
+    }
 
     const channel = findChannel(channels, chatJid);
     if (!channel) return;
@@ -651,15 +659,7 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
-      // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
-      if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
-        handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
-          logger.error({ err, chatJid }, 'Remote control command error'),
-        );
-        return;
-      }
-
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -675,6 +675,15 @@ async function main(): Promise<void> {
           }
           return;
         }
+      }
+
+      // Remote control commands are handled after sender checks so they cannot
+      // bypass allowlist enforcement for the main group.
+      if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
+        handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
+          logger.error({ err, chatJid }, 'Remote control command error'),
+        );
+        return;
       }
       storeMessage(msg);
     },

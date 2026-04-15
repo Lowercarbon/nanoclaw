@@ -28,6 +28,38 @@ export interface IpcDeps {
 
 let ipcWatcherRunning = false;
 
+export function resolveIpcFileUploadPath(
+  ipcBaseDir: string,
+  sourceGroup: string,
+  filePath: string,
+): string | null {
+  const filesDir = path.join(ipcBaseDir, sourceGroup, 'files');
+
+  let candidatePath: string;
+  if (filePath.startsWith('/workspace/ipc/files/')) {
+    candidatePath = path.join(
+      filesDir,
+      filePath.slice('/workspace/ipc/files/'.length),
+    );
+  } else if (filePath.startsWith('/workspace/ipc/')) {
+    return null;
+  } else {
+    candidatePath = filePath;
+  }
+
+  try {
+    const resolvedFilesDir = fs.realpathSync(filesDir);
+    const resolvedCandidate = fs.realpathSync(candidatePath);
+    const relative = path.relative(resolvedFilesDir, resolvedCandidate);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+    return resolvedCandidate;
+  } catch {
+    return null;
+  }
+}
+
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {
     logger.debug('IPC watcher already running, skipping duplicate start');
@@ -99,20 +131,26 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 data.filePath &&
                 data.filename
               ) {
-                // Translate container path to host path.
-                // Container writes to /workspace/ipc/files/..., which is
-                // bind-mounted from the host's IPC directory for this group.
-                const hostFilePath = (data.filePath as string).startsWith(
-                  '/workspace/ipc/',
-                )
-                  ? path.join(
-                      ipcBaseDir,
+                // Only allow uploads from the group's IPC files directory.
+                // This prevents forged IPC messages from pointing at arbitrary
+                // host-readable paths outside the sandboxed upload area.
+                const hostFilePath = resolveIpcFileUploadPath(
+                  ipcBaseDir,
+                  sourceGroup,
+                  data.filePath as string,
+                );
+                if (!hostFilePath) {
+                  logger.warn(
+                    {
+                      chatJid: data.chatJid,
+                      filePath: data.filePath,
                       sourceGroup,
-                      (data.filePath as string).slice(
-                        '/workspace/ipc/'.length,
-                      ),
-                    )
-                  : data.filePath;
+                    },
+                    'Rejected IPC file path outside allowed files directory',
+                  );
+                  fs.unlinkSync(filePath);
+                  continue;
+                }
 
                 const targetGroup = registeredGroups[data.chatJid];
                 if (

@@ -4,6 +4,7 @@ import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import { NewMessage } from './types.js';
 
 interface RemoteControlSession {
   pid: number;
@@ -74,6 +75,13 @@ export function restoreRemoteControl(): void {
 
 export function getActiveSession(): RemoteControlSession | null {
   return activeSession;
+}
+
+export function isRemoteControlAuthorized(
+  isMainGroup: boolean | undefined,
+  msg: Pick<NewMessage, 'is_from_me'>,
+): boolean {
+  return isMainGroup === true && msg.is_from_me === true;
 }
 
 /** @internal — exported for testing only */

@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -8,7 +12,7 @@ import {
   getTaskById,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import { processTaskIpc, IpcDeps, resolveIpcFileUploadPath } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -36,9 +40,11 @@ const THIRD_GROUP: RegisteredGroup = {
 
 let groups: Record<string, RegisteredGroup>;
 let deps: IpcDeps;
+let tempDir: string;
 
 beforeEach(() => {
   _initTestDatabase();
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-ipc-test-'));
 
   groups = {
     'main@g.us': MAIN_GROUP,
@@ -64,6 +70,10 @@ beforeEach(() => {
     writeGroupsSnapshot: () => {},
     onTasksChanged: () => {},
   };
+});
+
+afterEach(() => {
+  fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
 // --- schedule_task authorization ---
@@ -433,6 +443,54 @@ describe('IPC message authorization', () => {
     expect(
       isMessageAuthorized('whatsapp_main', true, 'unknown@g.us', groups),
     ).toBe(true);
+  });
+});
+
+describe('IPC file path validation', () => {
+  it('resolves container IPC file paths inside the group files directory', () => {
+    const filesDir = path.join(tempDir, 'ipc', 'other-group', 'files');
+    fs.mkdirSync(filesDir, { recursive: true });
+    const hostFile = path.join(filesDir, 'deck.pdf');
+    fs.writeFileSync(hostFile, 'deck');
+
+    expect(
+      resolveIpcFileUploadPath(
+        path.join(tempDir, 'ipc'),
+        'other-group',
+        '/workspace/ipc/files/deck.pdf',
+      ),
+    ).toBe(fs.realpathSync(hostFile));
+  });
+
+  it('rejects host paths outside the group files directory', () => {
+    const filesDir = path.join(tempDir, 'ipc', 'other-group', 'files');
+    const outsideDir = path.join(tempDir, 'outside');
+    fs.mkdirSync(filesDir, { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    const outsideFile = path.join(outsideDir, 'secrets.txt');
+    fs.writeFileSync(outsideFile, 'secret');
+
+    expect(
+      resolveIpcFileUploadPath(
+        path.join(tempDir, 'ipc'),
+        'other-group',
+        outsideFile,
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects non-files IPC container paths', () => {
+    const messagesDir = path.join(tempDir, 'ipc', 'other-group', 'messages');
+    fs.mkdirSync(messagesDir, { recursive: true });
+    fs.writeFileSync(path.join(messagesDir, 'msg.json'), '{}');
+
+    expect(
+      resolveIpcFileUploadPath(
+        path.join(tempDir, 'ipc'),
+        'other-group',
+        '/workspace/ipc/messages/msg.json',
+      ),
+    ).toBeNull();
   });
 });
 

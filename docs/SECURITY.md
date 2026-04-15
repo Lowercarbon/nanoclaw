@@ -64,15 +64,15 @@ Messages and task operations are verified against group identity:
 | View all tasks | ✓ | Own only |
 | Manage other groups | ✓ | ✗ |
 
-### 5. Credential Isolation (OneCLI Agent Vault)
+### 5. Credential Isolation (OneCLI + Private MCP Mounts)
 
-Real API credentials **never enter containers**. NanoClaw uses [OneCLI's Agent Vault](https://github.com/onecli/onecli) to proxy outbound requests and inject credentials at the gateway level.
+NanoClaw uses [OneCLI's Agent Vault](https://github.com/onecli/onecli) for proxied services, and host-managed private mounts for MCP integrations that still require local tokens or OAuth files.
 
 **How it works:**
-1. Credentials are registered once with `onecli secrets create`, stored and managed by OneCLI
+1. Credentials that support gateway injection are registered once with `onecli secrets create`
 2. When NanoClaw spawns a container, it calls `applyContainerConfig()` to route outbound HTTPS through the OneCLI gateway
-3. The gateway matches requests by host and path, injects the real credential, and forwards
-4. Agents cannot discover real credentials — not in environment, stdin, files, or `/proc`
+3. MCP integrations that still need local credentials are mounted from host-managed files under a private container path outside `/workspace/group`
+4. Sensitive group files are shadowed from the workspace, so agents cannot read them through normal project/group file access
 
 **Per-agent policies:**
 Each NanoClaw group gets its own OneCLI agent identity. This allows different credential policies per group (e.g. your sales agent vs. support agent). OneCLI supports rate limits, and time-bound access and approval flows are on the roadmap.
@@ -82,6 +82,9 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 - Mount allowlist — external, never mounted
 - Any credentials matching blocked patterns
 - `.env` is shadowed with `/dev/null` in the project root mount
+
+**Current limitation:**
+Private MCP credentials are no longer stored in the workspace-visible group files, but they still exist inside the trusted runner/container boundary for the integrations that need them. Treat this as stronger workspace isolation, not full in-container secret elimination.
 
 ## Privilege Comparison
 
@@ -113,13 +116,13 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 │  • OneCLI Agent Vault (injects credentials, enforces policies)   │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
-                                 ▼ Explicit mounts only, no secrets
+                                 ▼ Explicit mounts + private secret files
 ┌──────────────────────────────────────────────────────────────────┐
 │                CONTAINER (ISOLATED/SANDBOXED)                     │
 │  • Agent execution                                                │
 │  • Bash commands (sandboxed)                                      │
 │  • File operations (limited to mounts)                            │
 │  • API calls routed through OneCLI Agent Vault                   │
-│  • No real credentials in environment or filesystem              │
+│  • Private MCP secrets mounted outside `/workspace/group`        │
 └──────────────────────────────────────────────────────────────────┘
 ```

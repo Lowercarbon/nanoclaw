@@ -17,6 +17,7 @@ import {
   stopRemoteControl,
   restoreRemoteControl,
   getActiveSession,
+  isRemoteControlAuthorized,
   _resetForTesting,
   _getStateFilePath,
 } from './remote-control.js';
@@ -78,6 +79,24 @@ describe('remote-control', () => {
   });
 
   // --- startRemoteControl ---
+
+  describe('isRemoteControlAuthorized', () => {
+    it('allows self-sent commands in the main group', () => {
+      expect(isRemoteControlAuthorized(true, { is_from_me: true })).toBe(true);
+    });
+
+    it('rejects non-self commands even in the main group', () => {
+      expect(isRemoteControlAuthorized(true, { is_from_me: false })).toBe(
+        false,
+      );
+    });
+
+    it('rejects commands outside the main group', () => {
+      expect(isRemoteControlAuthorized(false, { is_from_me: true })).toBe(
+        false,
+      );
+    });
+  });
 
   describe('startRemoteControl', () => {
     it('spawns claude remote-control and returns the URL', async () => {
