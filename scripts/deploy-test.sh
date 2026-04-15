@@ -20,6 +20,18 @@ echo "=== Building container (no cache) ==="
 docker build --no-cache -t nanoclaw-agent:latest -f "$WORKTREE_DIR/container/Dockerfile" "$WORKTREE_DIR/container/"
 
 echo ""
+echo "=== Clearing agent memory and files ==="
+# Company folders (attachments, notes)
+rm -rf "$PROJECT_DIR"/groups/*/companies/
+# Conversation history
+rm -rf "$PROJECT_DIR"/groups/*/conversations/
+# Old company-notes (legacy flat structure)
+rm -rf "$PROJECT_DIR"/groups/*/company-notes/
+# IPC files (stale attachments)
+rm -rf "$PROJECT_DIR"/data/ipc/*/files/*
+echo "Cleared group data and IPC files"
+
+echo ""
 echo "=== Clearing agent sessions ==="
 DB_PATH="$PROJECT_DIR/store/messages.db"
 if [ -f "$DB_PATH" ]; then
