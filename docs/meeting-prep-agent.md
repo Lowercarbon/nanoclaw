@@ -72,7 +72,7 @@ Five independent MCP servers in `container/mcp-servers/`, each built into the co
 | **google** | `list_calendars`, `list_events`, `get_event`, `search_threads`, `get_thread`, `list_messages`, `download_attachment` | Google OAuth (`google-credentials.json` + `google-token.json`) |
 | **slack** | `search_slack_channel`, `search_slack_messages`, `download_slack_file` | Bot token (`slack-bot-token.txt`) |
 | **lowercarbon** | `portfolio_documents`, `get_company_facts`, `get_portfolio_facts` | Vectorize API key (`.mcp.json`) |
-| **granola** | `query_granola_meetings`, `list_granola_meetings`, `get_granola_meeting` | OAuth token (`granola-token.json`) |
+| **granola** | `query_granola_meetings`, `list_granola_meetings`, `get_granola_meeting` | OAuth token (`granola-token.json`, auto-refreshed when a refresh token is available) |
 | **affinity** | `search_affinity_companies`, `get_deal_log_entry`, `get_affinity_notes` | API key (`affinity-api-key.txt`) |
 
 ## GCP Project

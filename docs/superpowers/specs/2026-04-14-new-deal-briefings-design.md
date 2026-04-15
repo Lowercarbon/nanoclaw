@@ -87,7 +87,7 @@ Each server gets its credentials via env vars injected by agent-runner (same IIF
 | `google` | `reference/google-credentials.json`, `reference/google-token.json` | `GOOGLE_CREDENTIALS_PATH`, `GOOGLE_TOKEN_PATH` (file paths) |
 | `slack` | `reference/slack-bot-token.txt` | `SLACK_BOT_TOKEN` (value read from file) |
 | `lowercarbon` | `.mcp.json` → `mcpServers['lowercarbon-mcp']` | `LC_MCP_URL` (extracted URL), `LC_MCP_API_KEY` (extracted Bearer token) |
-| `granola` | `reference/granola-token.json` | `GRANOLA_TOKEN_PATH` (file path; server reads token from file, no refresh — token expiry tells user to re-run `granola-auth.ts`) |
+| `granola` | `reference/granola-token.json` | `GRANOLA_TOKEN_PATH` (file path; server reads the token from disk, refreshes via `refresh_token` when needed, and persists refreshed tokens back to the group token file) |
 | `affinity` | `reference/affinity-api-key.txt` | `AFFINITY_API_KEY` (value read from file) |
 
 ---

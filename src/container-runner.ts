@@ -80,7 +80,7 @@ const GROUP_SECRET_FILES = [
   {
     hostRelativePath: path.join('reference', 'granola-token.json'),
     privateFileName: 'granola-token.json',
-    readonly: true,
+    readonly: false,
   },
   {
     hostRelativePath: path.join('reference', 'affinity-api-key.txt'),
@@ -115,16 +115,13 @@ function syncGroupPrivateSecrets(
     const hostPath = path.join(groupDir, secretFile.hostRelativePath);
     if (!fs.existsSync(hostPath)) continue;
 
-    const privateHostPath = path.join(secretDir, secretFile.privateFileName);
-    fs.copyFileSync(hostPath, privateHostPath);
-
     mounts.push({
       hostPath: '/dev/null',
       containerPath: toContainerGroupPath(secretFile.hostRelativePath),
       readonly: true,
     });
     mounts.push({
-      hostPath: privateHostPath,
+      hostPath,
       containerPath: path.posix.join(
         CONTAINER_SECRET_DIR,
         secretFile.privateFileName,

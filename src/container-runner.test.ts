@@ -229,7 +229,7 @@ describe('container-runner timeout behavior', () => {
     expect(result.newSessionId).toBe('session-456');
   });
 
-  it('mounts the private Google token path writable for refreshes', async () => {
+  it('mounts canonical token files writable while shadowing workspace secrets', async () => {
     const fs = (await import('fs')).default;
     vi.mocked(fs.existsSync).mockImplementation((target) => {
       const value = String(target);
@@ -237,7 +237,9 @@ describe('container-runner timeout behavior', () => {
         value ===
           '/tmp/nanoclaw-test-groups/test-group/reference/google-credentials.json' ||
         value ===
-          '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json'
+          '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json' ||
+        value ===
+          '/tmp/nanoclaw-test-groups/test-group/reference/granola-token.json'
       );
     });
 
@@ -257,13 +259,25 @@ describe('container-runner timeout behavior', () => {
     const containerArgs = spawnCalls[0]?.[1] as string[];
 
     expect(containerArgs).toContain(
-      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-token.json:/run/nanoclaw-secrets/google-token.json',
+      '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json:/run/nanoclaw-secrets/google-token.json',
     );
     expect(containerArgs).toContain(
-      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-credentials.json:/run/nanoclaw-secrets/google-credentials.json:ro',
+      '/tmp/nanoclaw-test-groups/test-group/reference/granola-token.json:/run/nanoclaw-secrets/granola-token.json',
     );
     expect(containerArgs).not.toContain(
-      '/tmp/nanoclaw-test-data/sessions/test-group/private-secrets/google-token.json:/run/nanoclaw-secrets/google-token.json:ro',
+      '/tmp/nanoclaw-test-groups/test-group/reference/google-token.json:/run/nanoclaw-secrets/google-token.json:ro',
+    );
+    expect(containerArgs).not.toContain(
+      '/tmp/nanoclaw-test-groups/test-group/reference/granola-token.json:/run/nanoclaw-secrets/granola-token.json:ro',
+    );
+    expect(containerArgs).toContain(
+      '/tmp/nanoclaw-test-groups/test-group/reference/google-credentials.json:/run/nanoclaw-secrets/google-credentials.json:ro',
+    );
+    expect(containerArgs).toContain(
+      '/dev/null:/workspace/group/reference/google-token.json:ro',
+    );
+    expect(containerArgs).toContain(
+      '/dev/null:/workspace/group/reference/granola-token.json:ro',
     );
 
     emitOutputMarker(fakeProc, {
