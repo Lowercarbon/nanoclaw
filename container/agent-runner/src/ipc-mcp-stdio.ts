@@ -69,38 +69,31 @@ server.tool(
 
 server.tool(
   'send_file',
-  'Send a file attachment to the user or group. Pass the file_path from download_attachment. The original file is preserved after sending.',
+  'Send a file attachment to the user or group. Provide the file content as base64 (from download_attachment).',
   {
-    file_path: z.string().describe('Path to a file on disk (from download_attachment)'),
+    file_content_base64: z.string().describe('Base64-encoded file content'),
     filename: z.string().describe('The filename (e.g. "pitch-deck.pdf")'),
   },
   async (args) => {
-    if (!fs.existsSync(args.file_path)) {
-      return {
-        content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
-        isError: true,
-      };
-    }
-
-    // Copy to IPC dir so the original stays intact for future reads
+    // Write file to disk
     const filesDir = path.join(IPC_DIR, 'files');
     fs.mkdirSync(filesDir, { recursive: true });
     const safeFilename = args.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const ipcFilePath = path.join(filesDir, `${Date.now()}-${safeFilename}`);
-    fs.copyFileSync(args.file_path, ipcFilePath);
-    const sizeBytes = fs.statSync(ipcFilePath).size;
+    const filePath = path.join(filesDir, `${Date.now()}-${safeFilename}`);
+    const buffer = Buffer.from(args.file_content_base64, 'base64');
+    fs.writeFileSync(filePath, buffer);
 
-    // Write IPC message referencing the copy (host will clean up after upload)
+    // Write IPC message referencing the file
     writeIpcFile(MESSAGES_DIR, {
       type: 'file',
       chatJid,
-      filePath: ipcFilePath,
+      filePath,
       filename: args.filename,
       groupFolder,
       timestamp: new Date().toISOString(),
     });
 
-    return { content: [{ type: 'text' as const, text: `File "${args.filename}" sent (${sizeBytes} bytes).` }] };
+    return { content: [{ type: 'text' as const, text: `File "${args.filename}" sent (${buffer.length} bytes).` }] };
   },
 );
 
