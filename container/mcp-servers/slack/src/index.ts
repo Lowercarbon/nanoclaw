@@ -14,8 +14,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { writeFileSync, mkdirSync, copyFileSync, renameSync } from 'fs';
+import path from 'path';
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+const IPC_CHAT_JID = process.env.NANOCLAW_CHAT_JID || '';
+const IPC_GROUP_FOLDER = process.env.NANOCLAW_GROUP_FOLDER || '';
 
 function log(msg: string): void {
   process.stderr.write(`[slack-mcp] ${msg}\n`);
@@ -354,7 +358,7 @@ async function main(): Promise<void> {
 
   server.tool(
     'download_slack_file',
-    'Download a file from Slack using its private download URL. Returns the file content as base64 data. Use this to retrieve pitch decks, board materials, or other documents uploaded to Slack channels. Get the download URL from search_slack_messages file metadata.',
+    'Download a Slack file, save it to a company folder, and send it to the user as a chat attachment. All three happen automatically — no need to call send_file.',
     {
       url: z
         .string()
@@ -365,12 +369,17 @@ async function main(): Promise<void> {
         .string()
         .optional()
         .describe(
-          'Optional filename to include in the response. If omitted, extracted from the URL.',
+          'Optional filename. If omitted, extracted from the URL.',
+        ),
+      save_dir: z
+        .string()
+        .optional()
+        .describe(
+          'Directory to save (e.g. "/workspace/group/companies/{slug}/attachments")',
         ),
     },
     async (args) => {
       try {
-        // Validate the URL is a Slack file URL
         if (!args.url.startsWith('https://files.slack.com/')) {
           return {
             content: [
@@ -401,36 +410,56 @@ async function main(): Promise<void> {
           };
         }
 
-        const contentType = resp.headers.get('content-type') || 'application/octet-stream';
         const buffer = Buffer.from(await resp.arrayBuffer());
-        const base64 = buffer.toString('base64');
 
         // Determine filename
         let name = args.filename;
         if (!name) {
-          // Extract from URL path
           const urlPath = new URL(args.url).pathname;
           const segments = urlPath.split('/');
           name = segments[segments.length - 1] || 'download';
-          // Decode URI-encoded characters
           name = decodeURIComponent(name);
         }
+        const safeFilename = name.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-        const sizeMb = (buffer.length / (1024 * 1024)).toFixed(2);
-        log(`Downloaded ${name} (${sizeMb}MB, ${contentType})`);
+        // Save to persistent company folder
+        if (args.save_dir) {
+          mkdirSync(args.save_dir, { recursive: true });
+          writeFileSync(path.join(args.save_dir, safeFilename), buffer);
+          log(`Saved to ${args.save_dir}/${safeFilename} (${buffer.length} bytes)`);
+        }
 
+        // Auto-send to chat via IPC
+        let sent = false;
+        if (IPC_CHAT_JID && IPC_GROUP_FOLDER) {
+          const ipcFilesDir = '/workspace/ipc/files';
+          mkdirSync(ipcFilesDir, { recursive: true });
+          const ipcFilePath = path.join(ipcFilesDir, `${Date.now()}-${safeFilename}`);
+          writeFileSync(ipcFilePath, buffer);
+
+          const ipcMsgDir = '/workspace/ipc/messages';
+          mkdirSync(ipcMsgDir, { recursive: true });
+          const msgFilename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+          const tmpPath = path.join(ipcMsgDir, `${msgFilename}.tmp`);
+          writeFileSync(tmpPath, JSON.stringify({
+            type: 'file',
+            chatJid: IPC_CHAT_JID,
+            filePath: ipcFilePath,
+            filename: name,
+            groupFolder: IPC_GROUP_FOLDER,
+            timestamp: new Date().toISOString(),
+          }, null, 2));
+          renameSync(tmpPath, path.join(ipcMsgDir, msgFilename));
+          log(`IPC file send queued: ${name}`);
+          sent = true;
+        }
+
+        const savedTo = args.save_dir ? `${args.save_dir}/${safeFilename}` : '(temp only)';
         return {
           content: [
             {
               type: 'text' as const,
-              text: [
-                `File: ${name}`,
-                `Size: ${sizeMb}MB`,
-                `Content-Type: ${contentType}`,
-                `Base64 length: ${base64.length} chars`,
-                '',
-                `<base64>${base64}</base64>`,
-              ].join('\n'),
+              text: `Downloaded "${name}" (${buffer.length} bytes). Saved to ${savedTo}.${sent ? ' Sent to chat.' : ' WARNING: Could not auto-send.'}`,
             },
           ],
         };
