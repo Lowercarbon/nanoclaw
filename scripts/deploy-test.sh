@@ -17,18 +17,19 @@ fi
 
 echo "=== Building container (no cache) ==="
 # Build from the script's own repo (may be a worktree with newer code)
-docker build --no-cache -t nanoclaw-agent:latest -f "$WORKTREE_DIR/container/Dockerfile" "$WORKTREE_DIR/container/"
+# --progress=plain streams each step so long builds don't look hung
+docker build --progress=plain --no-cache -t nanoclaw-agent:latest -f "$WORKTREE_DIR/container/Dockerfile" "$WORKTREE_DIR/container/"
 
 echo ""
 echo "=== Clearing agent memory and files ==="
 # Company folders (attachments, notes)
-rm -rf "$PROJECT_DIR"/groups/*/companies/
+rm -rf "$PROJECT_DIR"/groups/*/companies/ 2>/dev/null || true
 # Conversation history
-rm -rf "$PROJECT_DIR"/groups/*/conversations/
+rm -rf "$PROJECT_DIR"/groups/*/conversations/ 2>/dev/null || true
 # Old company-notes (legacy flat structure)
-rm -rf "$PROJECT_DIR"/groups/*/company-notes/
+rm -rf "$PROJECT_DIR"/groups/*/company-notes/ 2>/dev/null || true
 # IPC files (stale attachments)
-rm -rf "$PROJECT_DIR"/data/ipc/*/files/*
+rm -rf "$PROJECT_DIR"/data/ipc/*/files/* 2>/dev/null || true
 echo "Cleared group data and IPC files"
 
 echo ""
