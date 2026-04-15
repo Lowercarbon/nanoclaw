@@ -75,6 +75,16 @@ systemctl --user restart nanoclaw
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
 
-## Container Build Cache
+## Deploying Changes
 
-The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+NanoClaw has **three independent caching layers**. Missing any one causes stale code to run:
+
+| Layer | What goes stale | Where |
+|-------|----------------|-------|
+| Docker image | Compiled MCP servers | buildkit COPY cache |
+| Cached agent-runner | `container/agent-runner/src/` | `data/sessions/<group>/agent-runner-src/` — copied at group creation, mounted into container at runtime, **overrides the Docker image** |
+| Host dist/ | `src/*.ts` host code | `dist/` — launchd runs from main repo |
+
+**Always use `./scripts/deploy-test.sh`** for test deploys. It handles all three layers plus runtime state cleanup (sessions, files, IPC). For host-side `src/*.ts` changes, also run `npm run build` in the main repo.
+
+**Never use `./container/build.sh` alone** — it doesn't sync the cached agent-runner or clear sessions.
