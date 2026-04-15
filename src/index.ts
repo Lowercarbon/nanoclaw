@@ -293,7 +293,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
+      // Skip messages that look like binary/base64 data (e.g., leaked attachment content).
+      // Heuristic: if >30% of chars are non-printable or the text looks like a base64 blob, drop it.
+      const nonPrintableRatio =
+        text.length > 0
+          ? (text.replace(/[\x20-\x7E\n\r\t]/g, '').length / text.length)
+          : 0;
+      const looksLikeBinary =
+        nonPrintableRatio > 0.3 ||
+        (text.length > 1000 && /^[A-Za-z0-9+/=\s]+$/.test(text));
+      if (looksLikeBinary) {
+        logger.warn(
+          { group: group.name, textLength: text.length, nonPrintableRatio },
+          'Dropped binary/base64 content from agent output',
+        );
+      } else if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }

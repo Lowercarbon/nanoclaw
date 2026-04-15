@@ -48,14 +48,34 @@ COPY agent-runner/ ./
 # Build TypeScript
 RUN npm run build
 
-# Copy and build Google Calendar + Gmail MCP server
-COPY mcp-servers/google-calendar-gmail/package*.json /app/mcp-servers/google-calendar-gmail/
-RUN cd /app/mcp-servers/google-calendar-gmail && npm install
-COPY mcp-servers/google-calendar-gmail/ /app/mcp-servers/google-calendar-gmail/
-RUN cd /app/mcp-servers/google-calendar-gmail && npx tsc
+# Build MCP servers
+COPY mcp-servers/google/package*.json /app/mcp-servers/google/
+RUN cd /app/mcp-servers/google && npm install
+COPY mcp-servers/google/ /app/mcp-servers/google/
+RUN cd /app/mcp-servers/google && npx tsc
+
+COPY mcp-servers/slack/package*.json /app/mcp-servers/slack/
+RUN cd /app/mcp-servers/slack && npm install
+COPY mcp-servers/slack/ /app/mcp-servers/slack/
+RUN cd /app/mcp-servers/slack && npx tsc
+
+COPY mcp-servers/lowercarbon/package*.json /app/mcp-servers/lowercarbon/
+RUN cd /app/mcp-servers/lowercarbon && npm install
+COPY mcp-servers/lowercarbon/ /app/mcp-servers/lowercarbon/
+RUN cd /app/mcp-servers/lowercarbon && npx tsc
+
+COPY mcp-servers/granola/package*.json /app/mcp-servers/granola/
+RUN cd /app/mcp-servers/granola && npm install
+COPY mcp-servers/granola/ /app/mcp-servers/granola/
+RUN cd /app/mcp-servers/granola && npx tsc
+
+COPY mcp-servers/affinity/package*.json /app/mcp-servers/affinity/
+RUN cd /app/mcp-servers/affinity && npm install
+COPY mcp-servers/affinity/ /app/mcp-servers/affinity/
+RUN cd /app/mcp-servers/affinity && npx tsc
 
 # Create workspace directories
-RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
+RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input /workspace/ipc/files
 
 # Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.

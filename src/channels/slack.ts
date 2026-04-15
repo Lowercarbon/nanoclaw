@@ -199,27 +199,32 @@ export class SlackChannel implements Channel {
     }
   }
 
-  isConnected(): boolean {
-    return this.connected;
-  }
-
-  ownsJid(jid: string): boolean {
-    return jid.startsWith('slack:');
-  }
-
   async sendFile(
     jid: string,
     filePath: string,
     filename: string,
   ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
-    const fileContent = fs.readFileSync(filePath);
-    await this.app.client.filesUploadV2({
-      channel_id: channelId,
-      file: fileContent,
-      filename,
-    });
-    logger.info({ jid, filename }, 'File uploaded to Slack');
+    try {
+      const fileContent = fs.readFileSync(filePath);
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: fileContent,
+        filename,
+      });
+      logger.info({ jid, filename }, 'Slack file uploaded');
+    } catch (err) {
+      logger.error({ jid, filename, err }, 'Failed to upload file to Slack');
+      throw err;
+    }
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  ownsJid(jid: string): boolean {
+    return jid.startsWith('slack:');
   }
 
   async disconnect(): Promise<void> {

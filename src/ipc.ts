@@ -101,14 +101,16 @@ export function startIpcWatcher(deps: IpcDeps): void {
               ) {
                 // Translate container path to host path.
                 // Container writes to /workspace/ipc/files/..., which is
-                // mounted from the host's IPC directory for this group.
+                // bind-mounted from the host's IPC directory for this group.
                 const hostFilePath = (data.filePath as string).startsWith(
                   '/workspace/ipc/',
                 )
                   ? path.join(
                       ipcBaseDir,
                       sourceGroup,
-                      (data.filePath as string).slice('/workspace/ipc/'.length),
+                      (data.filePath as string).slice(
+                        '/workspace/ipc/'.length,
+                      ),
                     )
                   : data.filePath;
 
@@ -123,6 +125,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       hostFilePath,
                       data.filename,
                     );
+                    // Clean up temp file after successful upload
+                    try {
+                      fs.unlinkSync(hostFilePath);
+                    } catch {
+                      /* ignore */
+                    }
                     logger.info(
                       {
                         chatJid: data.chatJid,
@@ -134,14 +142,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   } else {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC file send requested but sendFile not available',
+                      'File upload not supported — no sendFile handler',
                     );
-                  }
-                  // Clean up temp file
-                  try {
-                    fs.unlinkSync(hostFilePath);
-                  } catch {
-                    // ignore cleanup errors
                   }
                 } else {
                   logger.warn(

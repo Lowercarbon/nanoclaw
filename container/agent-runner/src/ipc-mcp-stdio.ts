@@ -68,6 +68,54 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Send a file attachment to the user or group. Provide EITHER file_path (for locally saved files) OR file_content_base64 (from download_attachment). There is no size limit.',
+  {
+    file_path: z.string().optional().describe('Absolute path to a file on disk (e.g. from companies/ folder)'),
+    file_content_base64: z.string().optional().describe('Base64-encoded file content (from download_attachment)'),
+    filename: z.string().describe('The filename (e.g. "pitch-deck.pdf")'),
+  },
+  async (args) => {
+    const filesDir = path.join(IPC_DIR, 'files');
+    fs.mkdirSync(filesDir, { recursive: true });
+    const safeFilename = args.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const ipcFilePath = path.join(filesDir, `${Date.now()}-${safeFilename}`);
+    let sizeBytes: number;
+
+    if (args.file_path) {
+      if (!fs.existsSync(args.file_path)) {
+        return {
+          content: [{ type: 'text' as const, text: `File not found: ${args.file_path}` }],
+          isError: true,
+        };
+      }
+      fs.copyFileSync(args.file_path, ipcFilePath);
+      sizeBytes = fs.statSync(ipcFilePath).size;
+    } else if (args.file_content_base64) {
+      const buffer = Buffer.from(args.file_content_base64, 'base64');
+      fs.writeFileSync(ipcFilePath, buffer);
+      sizeBytes = buffer.length;
+    } else {
+      return {
+        content: [{ type: 'text' as const, text: 'Provide either file_path or file_content_base64.' }],
+        isError: true,
+      };
+    }
+
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'file',
+      chatJid,
+      filePath: ipcFilePath,
+      filename: args.filename,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return { content: [{ type: 'text' as const, text: `File "${args.filename}" sent (${sizeBytes} bytes).` }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
