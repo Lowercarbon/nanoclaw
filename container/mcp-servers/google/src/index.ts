@@ -155,6 +155,42 @@ interface AttachmentInfo {
   size: number;
 }
 
+function resolveAttachmentInfo(
+  attachments: AttachmentInfo[],
+  requested: {
+    attachmentId?: string;
+    filename?: string;
+    mimeType?: string;
+  },
+): AttachmentInfo | null {
+  if (requested.attachmentId) {
+    const exact = attachments.find(
+      (attachment) => attachment.attachmentId === requested.attachmentId,
+    );
+    if (exact) return exact;
+  }
+
+  if (requested.filename) {
+    const byFilename = attachments.filter(
+      (attachment) => attachment.filename === requested.filename,
+    );
+    if (byFilename.length === 1) return byFilename[0];
+  }
+
+  if (requested.mimeType) {
+    const byMimeType = attachments.filter(
+      (attachment) => attachment.mimeType === requested.mimeType,
+    );
+    if (byMimeType.length === 1) return byMimeType[0];
+  }
+
+  if (attachments.length === 1) {
+    return attachments[0];
+  }
+
+  return null;
+}
+
 function extractAttachments(
   payload: gmail_v1.Schema$MessagePart,
 ): AttachmentInfo[] {
@@ -656,10 +692,38 @@ async function main(): Promise<void> {
     },
     async (args) => {
       try {
+        let filename = args.filename || 'attachment';
+        let mimeType = args.mime_type || 'application/octet-stream';
+        let attachmentId = args.attachment_id;
+
+        const msg = await gmail.users.messages.get({
+          userId: 'me',
+          id: args.message_id,
+          format: 'full',
+        });
+        const attachments = msg.data.payload
+          ? extractAttachments(msg.data.payload)
+          : [];
+        const resolved = resolveAttachmentInfo(attachments, {
+          attachmentId: args.attachment_id,
+          filename: args.filename,
+          mimeType: args.mime_type,
+        });
+        if (resolved) {
+          if (resolved.attachmentId !== attachmentId) {
+            log(
+              `Canonicalized attachment ID for "${resolved.filename}" on message ${args.message_id}`,
+            );
+          }
+          attachmentId = resolved.attachmentId;
+          filename = resolved.filename || filename;
+          mimeType = resolved.mimeType || mimeType;
+        }
+
         const att = await gmail.users.messages.attachments.get({
           userId: 'me',
           messageId: args.message_id,
-          id: args.attachment_id,
+          id: attachmentId,
         });
 
         const data = att.data.data;
@@ -668,25 +732,6 @@ async function main(): Promise<void> {
             content: [{ type: 'text' as const, text: 'Attachment has no content.' }],
             isError: true,
           };
-        }
-
-        let filename = args.filename || 'attachment';
-        let mimeType = args.mime_type || 'application/octet-stream';
-
-        if (!args.filename || !args.mime_type) {
-          const msg = await gmail.users.messages.get({
-            userId: 'me',
-            id: args.message_id,
-            format: 'full',
-          });
-          const parts = msg.data.payload?.parts || [];
-          for (const part of parts) {
-            if (part.body?.attachmentId === args.attachment_id) {
-              filename = part.filename || filename;
-              mimeType = part.mimeType || mimeType;
-              break;
-            }
-          }
         }
 
         const buffer = Buffer.from(data, 'base64url');
